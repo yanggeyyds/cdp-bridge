@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -360,7 +361,9 @@ class CdpViewModel : ViewModel() {
     }
 
     private fun update(block: (UiState) -> UiState) {
-        _ui.value = block(_ui.value)
+        // 用 MutableStateFlow.update 原子 CAS，避免并发事件（Network 流量很大时）
+        // 多线程同时读 _ui.value 再写回导致更新丢失。
+        _ui.update(block)
     }
 
     override fun onCleared() {
