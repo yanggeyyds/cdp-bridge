@@ -61,6 +61,8 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+        // AIDL 必须显式开启，否则 ICdpBridge.Stub 不会生成，Kotlin 编译报 Unresolved reference
+        aidl = true
     }
     composeOptions {
         // Kotlin 1.9.10 对应 Compose Compiler 1.5.3
