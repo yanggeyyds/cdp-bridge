@@ -12,16 +12,17 @@ interface ICdpBridge {
     // 启动桥接：在 UserService（shell UID 2000）内开 ServerSocket 监听 127.0.0.1:tcpPort，
     // 每个 accept 的连接通过 JNI 连到 abstract socket（abstractName 不带 '@' 前缀），
     // 双向 byte 拷贝（socat 语义）。返回成功与否。
-    boolean startBridge(int tcpPort, String abstractName);
+    boolean startBridge(int tcpPort, String abstractName) = 1;
 
     // 停止桥接：关闭 ServerSocket 与所有活动连接。
-    void stopBridge();
+    void stopBridge() = 2;
 
     // 枚举当前可调试 target：读 /proc/net/unix 过滤 @<name>_devtools_remote。
     // 返回不带 '@' 的 abstract socket 名列表（如 chrome_devtools_remote、webview_devtools_remote_8985）。
-    List<String> listTargets();
+    List<String> listTargets() = 3;
 
     // Shizuku 约定的销毁方法，transaction code 固定 16777114。
     // 在此方法内 System.exit(0) 让 UserService 进程退出。
+    // 注意：aidl 要求"要么所有方法都赋 id，要么都不赋"，故其余方法也赋了小整数 id。
     void destroy() = 16777114;
 }
