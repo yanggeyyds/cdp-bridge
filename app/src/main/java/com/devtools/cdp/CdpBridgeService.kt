@@ -40,8 +40,12 @@ class CdpBridgeService : ICdpBridge.Stub() {
     private val clientThreads = ConcurrentHashMap.newKeySet<Thread>()
     @Volatile private var currentAbstractName: String? = null
 
-    /** 无参构造：Shizuku 反射实例化必需。 */
-    constructor() {
+    /**
+     * 无参主构造：Shizuku 反射实例化必需。
+     * 注意：继承 AIDL Stub 时只能用主构造（不能用 secondary constructor + super()），
+     * 否则报 "Supertype initialization is impossible without primary constructor"。
+     */
+    init {
         Log.i(TAG, "CdpBridgeService constructed in pid=${android.os.Process.myPid()} uid=${android.os.Process.myUid()}")
     }
 
@@ -66,7 +70,8 @@ class CdpBridgeService : ICdpBridge.Stub() {
         }
 
         val acceptThread = Thread({
-            val srv = s
+            // 持有本地引用避免在 lambda 内直接读可变 server 字段
+            val srv = server
             while (running.get() && srv != null && !srv.isClosed) {
                 val client: Socket = try {
                     srv.accept()
@@ -90,9 +95,8 @@ class CdpBridgeService : ICdpBridge.Stub() {
                         try { client.close() } catch (_: Throwable) {}
                         if (fd != null) {
                             try {
-                                val fdObj = fd
                                 // 通过 FileInputStream close 间接关 fd
-                                java.io.FileInputStream(fdObj).close()
+                                java.io.FileInputStream(fd).close()
                             } catch (_: Throwable) {}
                         }
                         clientThreads.remove(Thread.currentThread())
