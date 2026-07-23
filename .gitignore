@@ -1,0 +1,32 @@
+# Gradle
+.gradle/
+build/
+
+# Local config (SDK path etc.) — must not be committed
+local.properties
+
+# IntelliJ / Android Studio
+*.iml
+.idea/
+.cxx/
+captures/
+
+# Native build intermediates
+app/.cxx/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# APK / build outputs (kept out of VCS)
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Keystore (never commit signing keys)
+*.jks
+*.keystore
+
+# Logs
+*.log

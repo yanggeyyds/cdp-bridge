@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      Shizuku 客户端权限：moe.shizuku.manager.permission.API_V23
+      研究：provider 模块的 AndroidManifest 会自动合并该 uses-permission，
+      此处显式声明仅为可读性。
+      来源: https://github.com/RikkaApps/Shizuku-API/blob/master/provider/src/main/AndroidManifest.xml
+    -->
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+
+    <!--
+      INTERNET：主进程用 OkHttp 访问 127.0.0.1:9222 的 HTTP 与 WebSocket
+      网络权限在 localhost 回环也必须声明。
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:allowBackup="true"
+        android:label="CDP Bridge"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.CdpBridge">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="CDP Bridge"
+            android:theme="@style/Theme.CdpBridge">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          Shizuku Provider 声明（仅支持 Shizuku 时必需）。
+          研究：authority 必须为 ${applicationId}.shizuku（非字面量 rikka.shizuku.provider），
+          类名为 rikka.shizuku.ShizukuProvider；INTERACT_ACROSS_USERS_FULL 防止普通 App 访问。
+          来源: https://github.com/RikkaApps/Shizuku-API/blob/master/demo/src/main/AndroidManifest.xml
+          来源: https://github.com/RikkaApps/Shizuku-API/blob/master/provider/src/main/AndroidManifest.xml
+
+          注意：Shizuku UserService 不需要在 manifest 声明 <service>，
+          子进程名由 UserServiceArgs.processNameSuffix("shizuku") 在代码控制，
+          故此处无 <service android:process=":shizuku"> 节点。
+        -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+    </application>
+
+</manifest>

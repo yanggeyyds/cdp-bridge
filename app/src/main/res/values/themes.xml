@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Compose 项目仅需要一个最小 XML 主题承载 Activity（Compose 自己绘制 UI）。
+      使用系统自带 Material 主题，避免引入 XML Material3 依赖。
+    -->
+    <style name="Theme.CdpBridge" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowBackground">@android:color/white</item>
+    </style>
+</resources>

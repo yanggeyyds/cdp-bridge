@@ -1,0 +1,27 @@
+// ICdpBridge.aidl —— Shizuku UserService 暴露的桥接接口
+//
+// 研究：UserService 由 Shizuku 服务端（shell/root UID）实例化，AIDL 方法直接跨进程调用。
+// destroy() 方法的 transaction code 在 Shizuku 服务端约定为 16777114（aidl 写法 = 16777114），
+// Shizuku 会在销毁进程时调用它；方法名必须叫 destroy。
+// 来源: https://github.com/RikkaApps/Shizuku-API/blob/master/README.md
+// 来源: https://github.com/RikkaApps/Shizuku-API/blob/master/demo/src/main/aidl/rikka/shizuku/demo/IUserService.aidl
+package com.devtools.cdp;
+
+interface ICdpBridge {
+
+    // 启动桥接：在 UserService（shell UID 2000）内开 ServerSocket 监听 127.0.0.1:tcpPort，
+    // 每个 accept 的连接通过 JNI 连到 abstract socket（abstractName 不带 '@' 前缀），
+    // 双向 byte 拷贝（socat 语义）。返回成功与否。
+    boolean startBridge(int tcpPort, String abstractName);
+
+    // 停止桥接：关闭 ServerSocket 与所有活动连接。
+    void stopBridge();
+
+    // 枚举当前可调试 target：读 /proc/net/unix 过滤 @<name>_devtools_remote。
+    // 返回不带 '@' 的 abstract socket 名列表（如 chrome_devtools_remote、webview_devtools_remote_8985）。
+    List<String> listTargets();
+
+    // Shizuku 约定的销毁方法，transaction code 固定 16777114。
+    // 在此方法内 System.exit(0) 让 UserService 进程退出。
+    void destroy() = 16777114;
+}
