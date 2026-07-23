@@ -29,11 +29,8 @@ jobs:
       - name: Set up Android SDK (cmdline-tools)
         uses: android-actions/setup-android@v3
         with:
-          packages: |
-            platforms;android-34
-            build-tools;34.0.0
-            ndk;25.2.9519653
-            cmake;3.22.1
+          # packages 用空格分隔（v3 不接受多行 YAML 折叠成含换行的字符串）
+          packages: 'platforms;android-34 build-tools;34.0.0 ndk;25.2.9519653 cmake;3.22.1'
 
       - name: Expose NDK env vars to AGP
         run: |
