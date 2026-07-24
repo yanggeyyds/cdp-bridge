@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.Card
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -50,6 +51,7 @@ private fun com.devtools.cdp.data.NetworkRequest.matchType(f: NetFilter): Boolea
 /**
  * Network 页：状态码/方法徽章 + 类型过滤 + 计数 + 清空。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NetworkScreen(viewModel: CdpViewModel, state: UiState) {
     var filter by remember { mutableStateOf(NetFilter.ALL) }

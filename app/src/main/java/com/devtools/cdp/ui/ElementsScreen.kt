@@ -96,7 +96,7 @@ private fun NodeRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = (item.depth * 12).dp, vertical = 1.dp),
+            .padding(start = (item.depth * 12).dp, top = 1.dp, bottom = 1.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (hasChildren) {

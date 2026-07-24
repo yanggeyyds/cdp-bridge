@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -39,6 +40,7 @@ private enum class ConsoleFilter(val label: String) {
 /**
  * Console 页：级别过滤 + 清空 + 时间戳 + 自动滚动到底部。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConsoleScreen(viewModel: CdpViewModel, state: UiState) {
     var expr by remember { mutableStateOf("") }
