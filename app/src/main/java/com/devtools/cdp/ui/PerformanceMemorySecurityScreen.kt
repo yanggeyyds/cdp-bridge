@@ -57,7 +57,8 @@ fun PerformanceScreen(viewModel: CdpViewModel, state: UiState) {
                 Button(onClick = { viewModel.startPerfRecording() }) { Text("开始录制") }
             }
         }
-        state.perfProfile?.let { profile ->
+        val profile = state.perfProfile
+        if (profile != null) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
@@ -73,7 +74,7 @@ fun PerformanceScreen(viewModel: CdpViewModel, state: UiState) {
                     fontFamily = FontFamily.Monospace
                 )
             }
-        } ?: run {
+        } else {
             Text("点击「开始录制」后在页面操作，再停止查看 CPU 热点函数。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -167,8 +168,13 @@ fun SecurityScreen(viewModel: CdpViewModel, state: UiState) {
                 viewModel.getSecurityInfo()
             }
         }
-        state.securityInfo?.let { json ->
-            val obj = runCatching { JsonParser.parseString(json).asJsonObject }.getOrNull()
+        val secInfo = state.securityInfo
+        if (secInfo == null) {
+            Text("点上方刷新查看页面安全信息。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else {
+            val obj = runCatching { JsonParser.parseString(secInfo).asJsonObject }.getOrNull()
             if (obj == null) {
                 Text("解析失败", style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error)
@@ -177,10 +183,6 @@ fun SecurityScreen(viewModel: CdpViewModel, state: UiState) {
                 val mixed = obj.get("mixedContent")?.asBoolean ?: false
                 SecurityCard(isSecure, mixed, obj)
             }
-        } ?: run {
-            Text("点上方刷新查看页面安全信息。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }

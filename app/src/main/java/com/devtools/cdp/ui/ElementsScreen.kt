@@ -187,21 +187,20 @@ fun ElementsScreen(viewModel: CdpViewModel, state: UiState) {
             }
 
             // 选中元素的属性编辑区
-            selectedNodeId?.let { sid ->
-                val node = findNode(root, sid)
-                if (node != null && node.isElement()) {
-                    AttributesEditor(
-                        node = node,
-                        onEditAttr = { name, value ->
-                            editAction = EditAction.EditAttr(sid, name, value)
-                        },
-                        onAddAttr = { editAction = EditAction.AddAttr(sid) },
-                        onRemoveAttr = { name -> viewModel.removeAttribute(sid, name) }
-                    )
-                    // Computed Styles 面板：选中节点自动拉取计算样式
-                    LaunchedEffect(sid) { viewModel.getComputedStyles(sid) }
-                    StylesCard(state, viewModel, sid)
-                }
+            val sid = selectedNodeId
+            val node = if (sid != null) findNode(root, sid) else null
+            if (sid != null && node != null && node.isElement()) {
+                // Computed Styles：选中节点自动拉取（放在子组件前，避免条件分支破坏组结构）
+                LaunchedEffect(sid) { viewModel.getComputedStyles(sid) }
+                AttributesEditor(
+                    node = node,
+                    onEditAttr = { name, value ->
+                        editAction = EditAction.EditAttr(sid, name, value)
+                    },
+                    onAddAttr = { editAction = EditAction.AddAttr(sid) },
+                    onRemoveAttr = { name -> viewModel.removeAttribute(sid, name) }
+                )
+                StylesCard(state, viewModel, sid)
             }
         }
     }

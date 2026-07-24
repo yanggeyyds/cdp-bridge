@@ -13,8 +13,8 @@ android {
         applicationId = "com.devtools.cdp"
         minSdk = 24
         targetSdk = 34
-        versionCode = 12
-        versionName = "1.9.2"
+        versionCode = 13
+        versionName = "1.9.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }

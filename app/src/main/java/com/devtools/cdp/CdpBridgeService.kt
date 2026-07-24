@@ -198,11 +198,13 @@ class CdpBridgeService : ICdpBridge.Stub() {
      *
      * 实现思路：
      *  1. 读 /proc/net/unix，过滤 @*_devtools_remote，记录 (name, inode)；
-     *  2. 遍历 /proc/<pid>/net/unix，匹配相同 inode 反查到 pid；
-     *  3. 读 /proc/<pid>/cmdline 拿进程名（对 WebView 是包名）；
-     *  4. 用 PackageManager 反查应用标签（UserService 进程无 Context，跳过标签，UI 侧用包名即可）。
+     *  2. 反查 pid：遍历 /proc/<pid>/fd/*，找到符号链接目标含 "socket:[inode]" 的 fd，
+     *     即该 inode 的真正持有进程。这是唯一可靠的反查方式 ——
+     *     /proc/<pid>/net/unix 是内核全局视图，所有进程都能看到全部 abstract socket，
+     *     用它反查会把第一个能读到该文件的进程（如权限管理器）误判为 socket 创建者。
+     *  3. 读 /proc/<pid>/cmdline 拿进程名/包名。
      *
-     * 返回 "abstractName\t进程名\t包名"。进程名和包名可能相同（Chrome 进程名即包名）。
+     * 返回 "abstractName\t进程名\t包名"。
      */
     override fun listTargetsWithInfo(): MutableList<String> {
         val out = mutableListOf<String>()
@@ -217,7 +219,6 @@ class CdpBridgeService : ICdpBridge.Stub() {
                     val lastSpace = line.lastIndexOf(' ')
                     val name = if (lastSpace >= 0) line.substring(lastSpace + 1) else ""
                     if (name.startsWith("@") && name.contains("_devtools_remote")) {
-                        // inode 是第 7 列
                         val parts = line.split(Regex("\\s+"))
                         if (parts.size >= 7) {
                             parts[6].toLongOrNull()?.let { inode ->
@@ -229,27 +230,29 @@ class CdpBridgeService : ICdpBridge.Stub() {
             }
             if (nameToInode.isEmpty()) return out
 
-            // 2. 反查 pid：扫 /proc/*/net/unix 找匹配 inode
+            // 2. 反查 pid：遍历 /proc/*/fd/* 找 "socket:[inode]" 符号链接
+            // 这才能确认 inode 真正归属哪个进程（fd 是进程私有的）
             val inodeToPid = mutableMapOf<Long, Int>()
+            val targetInodes = nameToInode.values.toSet()
             File("/proc").listFiles()?.forEach { procDir ->
-                val name = procDir.name
-                val pid = name.toIntOrNull() ?: return@forEach
-                try {
-                    File("$procDir/net/unix").useLines { ls ->
-                        ls.forEach { l ->
-                            val p = l.trim().split(Regex("\\s+"))
-                            if (p.size >= 7) {
-                                val ino = p[6].toLongOrNull() ?: return@forEach
-                                if (ino in nameToInode.values) inodeToPid[ino] = pid
-                            }
-                        }
+                val pid = procDir.name.toIntOrNull() ?: return@forEach
+                val fdDir = File("$procDir/fd")
+                val fds = try { fdDir.listFiles() } catch (_: Throwable) { null } ?: return@forEach
+                for (fd in fds) {
+                    val link = try {
+                        android.system.Os.readlink(fd.absolutePath)
+                    } catch (_: Throwable) { continue }
+                    // link 形如 "socket:[12345]"
+                    if (!link.startsWith("socket:")) continue
+                    val ino = link.removePrefix("socket:[").removeSuffix("]").toLongOrNull() ?: continue
+                    if (ino in targetInodes) {
+                        inodeToPid[ino] = pid
+                        break // 该进程已确认持有此 socket，无需继续扫它的 fd
                     }
-                } catch (_: Throwable) { /* 进程可能已退出或无权限 */ }
+                }
             }
 
             // 3. 读 /proc/<pid>/cmdline 拿进程名/包名
-            // UserService 是 shell UID，无法直接拿 PackageManager；
-            // 应用标签(label)由 UI 侧主进程用 PackageManager 反查，这里只回传包名。
             nameToInode.forEach { (sockName, inode) ->
                 val pid = inodeToPid[inode] ?: -1
                 var procName = ""
@@ -260,7 +263,6 @@ class CdpBridgeService : ICdpBridge.Stub() {
                         }
                     } catch (_: Throwable) {}
                 }
-                // cmdline 对 Chrome 是 "com.android.chrome" 或 "com.android.chrome:sandbox"
                 val pkgName = procName.substringBefore(':')
                 out.add("$sockName\t$procName\t$pkgName")
             }
