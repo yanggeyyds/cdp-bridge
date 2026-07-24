@@ -210,6 +210,7 @@ private fun SecurityCard(isSecure: Boolean, mixed: Boolean, obj: com.google.gson
                             color = MaterialTheme.colorScheme.onErrorContainer)
                     }
                 }
+    }
 }
 
 @Composable

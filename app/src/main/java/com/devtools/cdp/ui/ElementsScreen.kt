@@ -146,15 +146,13 @@ fun ElementsScreen(viewModel: CdpViewModel, state: UiState) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
             val flat = remember(root, expanded.toMap(), selectedNodeId) {
-                buildFlatList(root, 0, expanded).apply {
-                    if (size > 300) subList(0, 300)
-                }
+                buildFlatList(root, 0, expanded).let { if (it.size > 300) it.subList(0, 300).toList() else it.toList() }
             }
             LazyColumn(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(0.dp)
             ) {
-                items(flat, key = { it.node.nodeId }) { item ->
+                items(flat, key = { "${it.node.nodeId}-${it.depth}-${it.pathIndex}" }) { item ->
                     NodeRow(
                         item = item,
                         expanded = expanded,
@@ -428,7 +426,8 @@ private fun buildFlatList(
     expanded: Map<Int, Boolean>,
     out: MutableList<FlatNode> = mutableListOf()
 ): MutableList<FlatNode> {
-    out.add(FlatNode(node, depth))
+    val pathIndex = out.size
+    out.add(FlatNode(node, depth, pathIndex))
     val isOpen = expanded[node.nodeId] ?: (depth == 0)
     if (isOpen && !node.children.isNullOrEmpty()) {
         node.children!!.forEach { buildFlatList(it, depth + 1, expanded, out) }
@@ -436,7 +435,7 @@ private fun buildFlatList(
     return out
 }
 
-private data class FlatNode(val node: DomNode, val depth: Int)
+private data class FlatNode(val node: DomNode, val depth: Int, val pathIndex: Int)
 
 /** 在树里按 nodeId 查找节点。 */
 private fun findNode(root: DomNode?, nodeId: Int): DomNode? {

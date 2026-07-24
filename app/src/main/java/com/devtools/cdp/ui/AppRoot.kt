@@ -46,9 +46,9 @@ import androidx.compose.ui.unit.dp
 import com.devtools.cdp.BuildConfig
 
 private enum class CdpTab(val title: String) {
-    TARGETS("Targets"), CONSOLE("Console"), ELEMENTS("Elements"),
-    NETWORK("Network"), SOURCES("Sources"), APP("Application"),
-    PERFORMANCE("Performance"), MEMORY("Memory"), SECURITY("Security")
+    TARGETS("目标"), CONSOLE("控制台"), ELEMENTS("元素"),
+    NETWORK("网络"), SOURCES("源代码"), APP("应用"),
+    PERFORMANCE("性能"), MEMORY("内存"), SECURITY("安全")
 }
 
 /**
@@ -90,7 +90,7 @@ fun AppRoot(viewModel: CdpViewModel, onModeChange: (BridgeMode) -> Unit) {
                     ModeSwitcher(state.mode, onModeChange)
                     // 状态指示 dot（红/黄/绿）
                     StatusDot(state.bridgeState, modifier = Modifier.padding(end = 4.dp))
-                    IconButton(onClick = { viewModel.refreshAbstractTargets() }) {
+                    IconButton(onClick = { viewModel.refreshAbstractTargetsDetailed() }) {
                         Icon(Icons.Filled.Refresh, contentDescription = "刷新枚举")
                     }
                     when (state.bridgeState) {

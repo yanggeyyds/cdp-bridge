@@ -51,7 +51,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 private enum class AppTab(val label: String) {
-    COOKIES("Cookies"), LOCAL("Local Storage"), SESSION("Session Storage")
+    COOKIES("Cookies"), LOCAL("本地存储"), SESSION("会话存储")
 }
 
 /**

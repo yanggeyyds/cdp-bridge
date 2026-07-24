@@ -27,6 +27,12 @@ interface ICdpBridge {
     // 区别于 startBridge 仅绑定 TCP 监听、未验证对端。
     int probeAbstract(String abstractName) = 4;
 
+    // 枚举 target 并附带所属应用信息。
+    // 返回 "abstractName\t进程名\t包名" 列表（tab 分隔），用于在 UI 显示是哪个 App。
+    // 进程名/包名通过 /proc/net/unix 找到 inode，再匹配 /proc/<pid>/net/unix 反查 pid，
+    // 最后读 /proc/<pid>/cmdline。Root/Shizuku shell UID 有权限读其他进程的 /proc。
+    List<String> listTargetsWithInfo() = 5;
+
     // Shizuku 约定的销毁方法，transaction code 固定 16777114。
     // 在此方法内 System.exit(0) 让 UserService 进程退出。
     // 注意：aidl 要求"要么所有方法都赋 id，要么都不赋"，故其余方法也赋了小整数 id。

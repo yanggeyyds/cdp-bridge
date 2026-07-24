@@ -79,7 +79,7 @@ private fun NetworkRequest.matchType(f: NetFilter): Boolean = when (f) {
 }
 
 private enum class DetailTab(val label: String) {
-    HEADERS("Headers"), RESPONSE("Response"), PAYLOAD("Payload"), TIMING("Timing")
+    HEADERS("标头"), RESPONSE("响应"), PAYLOAD("载荷"), TIMING("耗时")
 }
 
 /**

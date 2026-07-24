@@ -48,7 +48,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 private enum class SourcesTab(val label: String) {
-    SCRIPTS("Scripts"), SNIPPET("Snippet")
+    SCRIPTS("脚本"), SNIPPET("代码片段")
 }
 
 /**

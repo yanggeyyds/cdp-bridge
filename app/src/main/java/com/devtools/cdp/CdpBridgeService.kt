@@ -192,4 +192,89 @@ class CdpBridgeService : ICdpBridge.Stub() {
         stopBridge()
         System.exit(0)
     }
+
+    /**
+     * 枚举 target 并附带所属应用信息。
+     *
+     * 实现思路：
+     *  1. 读 /proc/net/unix，过滤 @*_devtools_remote，记录 (name, inode)；
+     *  2. 遍历 /proc/<pid>/net/unix，匹配相同 inode 反查到 pid；
+     *  3. 读 /proc/<pid>/cmdline 拿进程名（对 WebView 是包名）；
+     *  4. 用 PackageManager 反查应用标签（UserService 进程无 Context，跳过标签，UI 侧用包名即可）。
+     *
+     * 返回 "abstractName\t进程名\t包名"。进程名和包名可能相同（Chrome 进程名即包名）。
+     */
+    override fun listTargetsWithInfo(): MutableList<String> {
+        val out = mutableListOf<String>()
+        try {
+            // 1. 拿到 abstract socket 名 -> inode 映射
+            // /proc/net/unix 列：Num RefCount Protocol Flags Type St Inode Path
+            val nameToInode = mutableMapOf<String, Long>()
+            File("/proc/net/unix").useLines { lines ->
+                lines.forEach { raw ->
+                    val line = raw.trim()
+                    if (line.isEmpty()) return@forEach
+                    val lastSpace = line.lastIndexOf(' ')
+                    val name = if (lastSpace >= 0) line.substring(lastSpace + 1) else ""
+                    if (name.startsWith("@") && name.contains("_devtools_remote")) {
+                        // inode 是第 7 列
+                        val parts = line.split(Regex("\\s+"))
+                        if (parts.size >= 7) {
+                            parts[6].toLongOrNull()?.let { inode ->
+                                nameToInode[name.substring(1)] = inode
+                            }
+                        }
+                    }
+                }
+            }
+            if (nameToInode.isEmpty()) return out
+
+            // 2. 反查 pid：扫 /proc/*/net/unix 找匹配 inode
+            val inodeToPid = mutableMapOf<Long, Int>()
+            File("/proc").listFiles()?.forEach { procDir ->
+                val name = procDir.name
+                val pid = name.toIntOrNull() ?: return@forEach
+                try {
+                    File("$procDir/net/unix").useLines { ls ->
+                        ls.forEach { l ->
+                            val p = l.trim().split(Regex("\\s+"))
+                            if (p.size >= 7) {
+                                val ino = p[6].toLongOrNull() ?: return@forEach
+                                if (ino in nameToInode.values) inodeToPid[ino] = pid
+                            }
+                        }
+                    }
+                } catch (_: Throwable) { /* 进程可能已退出或无权限 */ }
+            }
+
+            // 3. 读 /proc/<pid>/cmdline 拿进程名/包名
+            val pm = android.app.AppGlobals.getPackageManager()
+            nameToInode.forEach { (sockName, inode) ->
+                val pid = inodeToPid[inode] ?: -1
+                var procName = ""
+                var pkgName = ""
+                var appLabel = ""
+                if (pid > 0) {
+                    try {
+                        File("/proc/$pid/cmdline").useLines { ls ->
+                            procName = ls.firstOrNull()?.trim('\u0000', ' ') ?: ""
+                        }
+                    } catch (_: Throwable) {}
+                    // cmdline 对 Chrome 是 "com.android.chrome" 或 "com.android.chrome:sandbox"
+                    pkgName = procName.substringBefore(':')
+                    // 反查应用标签（UserService 是 shell UID，getPackageInfo 可能受限，try/catch）
+                    try {
+                        val info = pm?.getPackageInfo(pkgName, 0)
+                        if (info != null) {
+                            appLabel = pm.getApplicationLabel(info.applicationInfo).toString()
+                        }
+                    } catch (_: Throwable) {}
+                }
+                out.add("$sockName\t$procName\t$pkgName\t$appLabel")
+            }
+        } catch (e: Throwable) {
+            Log.e(TAG, "listTargetsWithInfo failed: ${e.message}")
+        }
+        return out
+    }
 }

@@ -43,12 +43,24 @@ enum class BridgeState {
 /** 桥接来源模式：Shizuku（非 Root，需 Shizuku App）或 Root（需 root 设备）。 */
 enum class BridgeMode { SHIZUKU, ROOT }
 
+/** Remote socket + 所属应用信息。 */
+data class AbstractTarget(
+    val socketName: String,
+    val processName: String,
+    val packageName: String,
+    val appLabel: String
+) {
+    /** 显示用：优先应用名，其次进程名，最后 socket 名。 */
+    fun displayName(): String = appLabel.ifBlank { processName.ifBlank { socketName } }
+}
+
 data class UiState(
     val bridgeState: BridgeState = BridgeState.IDLE,
     val mode: BridgeMode = BridgeMode.ROOT,
     val statusMessage: String = "",
     val version: VersionInfo? = null,
     val abstractTargets: List<String> = emptyList(),   // /proc/net/unix 枚举的 socket 名
+    val abstractTargetsDetailed: List<AbstractTarget> = emptyList(), // 带应用信息的 target
     val httpTargets: List<TargetInfo> = emptyList(),   // /json/list 的 page target
     val selectedAbstract: String? = null,
     val console: List<ConsoleEntry> = emptyList(),
@@ -217,7 +229,7 @@ class CdpViewModel : ViewModel() {
         val m = _ui.value.mode
         update { it.copy(bridgeState = BridgeState.BOUND,
             statusMessage = "${if (m == BridgeMode.ROOT) "Root" else "Shizuku"} 服务已绑定，可启动桥接") }
-        refreshAbstractTargets()
+        refreshAbstractTargetsDetailed()
     }
 
     fun onBridgeDisconnected() {
@@ -235,6 +247,31 @@ class CdpViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             val names = runCatching { b.listTargets() }.getOrDefault(emptyList())
             update { it.copy(abstractTargets = names) }
+        }
+    }
+
+    /** 刷新带应用信息的 target 列表（abstract socket + 所属进程/包名/应用名）。 */
+    fun refreshAbstractTargetsDetailed() {
+        val b = bridge ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val infos = runCatching { b.listTargetsWithInfo() }.getOrDefault(emptyList())
+            // 解析 "sock\tproc\tpkg\tlabel"，label 可能为空
+            val models = infos.mapNotNull { line ->
+                val p = line.split("\t")
+                if (p.size < 4) return@mapNotNull null
+                AbstractTarget(
+                    socketName = p[0],
+                    processName = p[1],
+                    packageName = p[2],
+                    appLabel = p[3]
+                )
+            }
+            // 兼容：如果新版方法无响应，回退到旧 listTargets 仅显示 socket 名
+            val fallback = if (models.isEmpty()) {
+                runCatching { b.listTargets() }.getOrDefault(emptyList()).map { AbstractTarget(it, "", "", "") }
+            } else models
+            update { it.copy(abstractTargetsDetailed = fallback,
+                abstractTargets = fallback.map { it.socketName }) }
         }
     }
 
@@ -1225,6 +1262,61 @@ class CdpViewModel : ViewModel() {
             update { it.copy(computedStyles = list) }
         }
     }
+
+    // ==================== 便捷功能 ====================
+    // 发掘的额外功能：清除缓存、页面信息、设备信息。
+
+    /** 清除浏览器缓存（Network.clearBrowserCache）。 */
+    fun clearBrowserCache() {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { c.send("Network.clearBrowserCache") }
+            update { it.copy(statusMessage = "已清除浏览器缓存") }
+        }
+    }
+
+    /** 禁用缓存（Network.setCacheDisabled），对齐 DevTools Network 的 Disable cache。 */
+    fun setCacheDisabled(disabled: Boolean) {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val params = JsonObject().apply { addProperty("cacheDisabled", disabled) }
+            runCatching { c.send("Network.setCacheDisabled", params) }
+            update { it.copy(statusMessage = if (disabled) "已禁用缓存" else "已启用缓存") }
+        }
+    }
+
+    /** 拉取页面信息（标题/URL/UserAgent/视口/语言）via Runtime.evaluate。 */
+    fun getPageInfo(onResult: (String) -> Unit) {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val expr = """JSON.stringify({
+                title: document.title, url: location.href, ua: navigator.userAgent,
+                lang: navigator.language, platform: navigator.platform,
+                viewport: window.innerWidth + 'x' + window.innerHeight,
+                screen: screen.width + 'x' + screen.height + ' (dpr ' + window.devicePixelRatio + ')',
+                online: navigator.onLine, cookies: document.cookie.split(';').length
+            })""".trimIndent()
+            val params = JsonObject().apply {
+                addProperty("expression", expr)
+                addProperty("returnByValue", true)
+            }
+            val res = runCatching { c.send("Runtime.evaluate", params) }.getOrNull()
+            val json = res?.getAsJsonObject("result")?.get("value")?.asString ?: "{}"
+            val sb = StringBuilder()
+            try {
+                val o = com.google.gson.JsonParser.parseString(json).asJsonObject
+                sb.append("标题: ${o.get("title")?.asString ?: ""}\n")
+                sb.append("URL: ${o.get("url")?.asString ?: ""}\n")
+                sb.append("UA: ${o.get("ua")?.asString ?: ""}\n")
+                sb.append("语言: ${o.get("lang")?.asString ?: ""}  平台: ${o.get("platform")?.asString ?: ""}\n")
+                sb.append("视口: ${o.get("viewport")?.asString ?: ""}\n")
+                sb.append("屏幕: ${o.get("screen")?.asString ?: ""}\n")
+                sb.append("在线: ${o.get("online")?.asBoolean ?: false}  Cookie数: ${o.get("cookies")?.asInt ?: 0}")
+            } catch (_: Throwable) { sb.append(json) }
+            onResult(sb.toString())
+        }
+    }
+
 
     private fun update(block: (UiState) -> UiState) {
         // 用 MutableStateFlow.update 原子 CAS，避免并发事件（Network 流量很大时）

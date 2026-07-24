@@ -1,6 +1,8 @@
 package com.devtools.cdp.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -78,7 +80,7 @@ fun TargetsScreen(viewModel: CdpViewModel, state: UiState) {
                             modifier = Modifier.size(18.dp)
                         )
                         Text(
-                            "  Bridge",
+                            "  桥接状态",
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -91,9 +93,9 @@ fun TargetsScreen(viewModel: CdpViewModel, state: UiState) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     } else {
-                        Text("Browser  ${v.browser ?: "—"}",
+                        Text("浏览器  ${v.browser ?: "—"}",
                             style = MaterialTheme.typography.bodySmall)
-                        Text("Protocol ${v.protocolVersion ?: "—"}",
+                        Text("协议版本 ${v.protocolVersion ?: "—"}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
@@ -109,51 +111,63 @@ fun TargetsScreen(viewModel: CdpViewModel, state: UiState) {
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         OutlinedButton(onClick = { viewModel.refreshVersion() }) { Text("版本") }
-                        OutlinedButton(onClick = { viewModel.refreshHttpTargets() }) { Text("Targets") }
+                        OutlinedButton(onClick = { viewModel.refreshHttpTargets() }) { Text("页面列表") }
                         // 页面控制：重载（Page.reload），对齐 DevTools 的刷新按钮
                         OutlinedButton(
                             onClick = { viewModel.reloadPage() },
                             enabled = state.cdpConnected
                         ) { Text("重载") }
                     }
+                    // 便捷操作：页面信息 / 清缓存 / 禁用缓存
+                    var cacheDisabled by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+                    var pageInfo by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<String?>(null) }
+                    Row(
+                        modifier = Modifier.padding(top = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            enabled = state.cdpConnected,
+                            onClick = { viewModel.getPageInfo { pageInfo = it } }
+                        ) { Text("页面信息") }
+                        OutlinedButton(
+                            enabled = state.cdpConnected,
+                            onClick = { viewModel.clearBrowserCache() }
+                        ) { Text("清缓存") }
+                        OutlinedButton(
+                            enabled = state.cdpConnected,
+                            onClick = {
+                                cacheDisabled = !cacheDisabled
+                                viewModel.setCacheDisabled(cacheDisabled)
+                            }
+                        ) { Text(if (cacheDisabled) "启用缓存" else "禁用缓存") }
+                    }
+                    pageInfo?.let {
+                        Spacer(Modifier.height(6.dp))
+                        Text(it, style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(2.dp))
+                    }
                 }
             }
         }
 
-        // ---- 2. Remote sockets ----
-        item { SectionHeader("Remote sockets", "从 /proc/net/unix 枚举") }
-        if (state.abstractTargets.isEmpty()) {
+        // ---- 2. 远程 Socket（显示所属应用）----
+        item { SectionHeader("远程调试目标", "从 /proc/net/unix 枚举，已关联所属应用") }
+        if (state.abstractTargetsDetailed.isEmpty() && state.abstractTargets.isEmpty()) {
             item {
                 HintText("未发现 *_devtools_remote。请打开 Chrome 或可调试 WebView，再点右上角刷新。")
             }
         }
-        items(state.abstractTargets, key = { it }) { name ->
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("@$name", style = MaterialTheme.typography.bodyMedium)
-                        if (name == state.selectedAbstract && state.bridgeState == BridgeState.BRIDGE_RUNNING) {
-                            Text("→ 127.0.0.1:9222",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.secondary)
-                        }
-                    }
-                    Button(
-                        enabled = state.bridgeState == BridgeState.BOUND,
-                        onClick = { viewModel.startBridge(name) }
-                    ) { Text("启动") }
-                }
-            }
+        items(state.abstractTargetsDetailed, key = { it.socketName }) { tgt ->
+            RemoteSocketCard(tgt, state, viewModel)
         }
 
-        // ---- 3. Page targets ----
-        item { SectionHeader("Page targets", "来自 /json/list") }
+        // ---- 3. 页面目标 ----
+        item { SectionHeader("页面目标", "来自 /json/list") }
         if (state.httpTargets.isEmpty()) {
             item {
-                HintText("无 page target。请启动桥接并在 Chrome 打开网页。")
+                HintText("无页面目标。请启动桥接并在浏览器打开网页。")
             }
         }
         items(state.httpTargets, key = { it.id ?: it.title ?: it.url ?: java.util.UUID.randomUUID().toString() }) { tgt ->
@@ -181,11 +195,71 @@ private fun HintText(text: String) {
     )
 }
 
+/**
+ * 远程 Socket 卡片：显示所属应用名 + 包名 + socket 名，长按复制 socket 名。
+ */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun TargetCard(tgt: TargetInfo, connected: Boolean, onInspect: () -> Unit) {
+private fun RemoteSocketCard(tgt: AbstractTarget, state: UiState, viewModel: CdpViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val isActive = tgt.socketName == state.selectedAbstract && state.bridgeState == BridgeState.BRIDGE_RUNNING
     Card(modifier = Modifier.fillMaxWidth()) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .combinedClickable(
+                    onClick = {},
+                    onLongClick = {
+                        copyText(context, tgt.socketName)
+                    }
+                )
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                // 应用名（大字），没有则显示 socket 名
+                Text(tgt.displayName(),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium)
+                // 包名 / 进程名（如果有）
+                if (tgt.packageName.isNotBlank() && tgt.packageName != tgt.appLabel) {
+                    Text(tgt.packageName,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                // socket 名（技术细节）
+                Text("@${tgt.socketName}",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.tertiary)
+                if (isActive) {
+                    Text("→ 127.0.0.1:9222（已桥接）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.secondary)
+                }
+            }
+            Button(
+                enabled = state.bridgeState == BridgeState.BOUND,
+                onClick = { viewModel.startBridge(tgt.socketName) }
+            ) { Text(if (isActive) "重启" else "启动") }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun TargetCard(tgt: TargetInfo, connected: Boolean, onInspect: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .combinedClickable(
+                    onClick = {},
+                    onLongClick = { tgt.url?.let { copyText(context, it) } }
+                )
+                .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             // 类型徽章
@@ -206,7 +280,7 @@ private fun TargetCard(tgt: TargetInfo, connected: Boolean, onInspect: () -> Uni
                 )
             }
             Button(onClick = onInspect) {
-                Text(if (connected) "重连" else "Inspect")
+                Text(if (connected) "重连" else "调试")
             }
         }
     }
@@ -214,10 +288,10 @@ private fun TargetCard(tgt: TargetInfo, connected: Boolean, onInspect: () -> Uni
 
 @Composable
 private fun TypeBadge(type: String) {
-    val (bg, fg) = when (type) {
-        "page" -> MaterialTheme.colorScheme.primaryContainer to MaterialTheme.colorScheme.onPrimaryContainer
-        "background_page" -> MaterialTheme.colorScheme.tertiaryContainer to MaterialTheme.colorScheme.onTertiaryContainer
-        else -> MaterialTheme.colorScheme.surfaceVariant to MaterialTheme.colorScheme.onSurfaceVariant
+    val (bg, fg, label) = when (type) {
+        "page" -> Triple(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.onPrimaryContainer, "页面")
+        "background_page" -> Triple(MaterialTheme.colorScheme.tertiaryContainer, MaterialTheme.colorScheme.onTertiaryContainer, "后台页")
+        else -> Triple(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, type)
     }
     Box(
         modifier = Modifier
@@ -225,7 +299,7 @@ private fun TypeBadge(type: String) {
             .background(bg)
             .padding(horizontal = 6.dp, vertical = 2.dp)
     ) {
-        Text(type, style = MaterialTheme.typography.labelSmall, color = fg)
+        Text(label, style = MaterialTheme.typography.labelSmall, color = fg)
     }
 }
 
@@ -324,7 +398,7 @@ private fun DiagnosticsCard(state: UiState, viewModel: CdpViewModel) {
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { viewModel.refreshVersion() }) { Text("重试探测") }
-                OutlinedButton(onClick = { viewModel.refreshAbstractTargets() }) { Text("重新枚举") }
+                OutlinedButton(onClick = { viewModel.refreshAbstractTargetsDetailed() }) { Text("重新枚举") }
                 OutlinedButton(onClick = { viewModel.stopBridge() }) { Text("停止桥接") }
             }
         }
@@ -474,4 +548,10 @@ private fun StepRow(step: GuideStep, done: Boolean, active: Boolean) {
             )
         }
     }
+}
+
+/** 复制文本到剪贴板（长按复制用）。 */
+private fun copyText(context: android.content.Context, text: String) {
+    val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+    cm.setPrimaryClip(android.content.ClipData.newPlainText("cdp", text))
 }
