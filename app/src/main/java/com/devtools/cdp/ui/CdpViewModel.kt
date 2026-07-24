@@ -33,14 +33,19 @@ enum class BridgeState {
     SHIZUKU_TOO_OLD,     // pre-v11 旧服务
     PERMISSION_DENIED,   // 用户拒绝授权
     WAITING_PERMISSION,  // 等待授权弹窗
-    BIND_FAILED,         // 绑定 UserService 失败
+    BIND_FAILED,         // 绑定服务失败（Shizuku UserService 或 RootService）
     BINDER_DEAD,         // binder 死亡
-    BOUND,               // UserService 已绑定，可启动桥接
-    BRIDGE_RUNNING       // 桥接已启动，9222 可访问
+    BOUND,               // 服务已绑定，可启动桥接
+    BRIDGE_RUNNING,      // 桥接已启动，9222 可访问
+    ROOT_NO_SHELL        // Root 模式下未获取 root 权限
 }
+
+/** 桥接来源模式：Shizuku（非 Root，需 Shizuku App）或 Root（需 root 设备）。 */
+enum class BridgeMode { SHIZUKU, ROOT }
 
 data class UiState(
     val bridgeState: BridgeState = BridgeState.IDLE,
+    val mode: BridgeMode = BridgeMode.ROOT,
     val statusMessage: String = "",
     val version: VersionInfo? = null,
     val abstractTargets: List<String> = emptyList(),   // /proc/net/unix 枚举的 socket 名
@@ -125,14 +130,49 @@ class CdpViewModel : ViewModel() {
 
     fun onBinderDead() = update {
         it.copy(bridgeState = BridgeState.BINDER_DEAD,
-            statusMessage = "Shizuku binder 死亡", cdpConnected = false)
+            statusMessage = "${if (_ui.value.mode == BridgeMode.ROOT) "Root" else "Shizuku"} binder 死亡",
+            cdpConnected = false)
+    }
+
+    /** Root 模式：未获取 root 权限（Shell.getShell 抛 NoShellException）。 */
+    fun onRootNoShell() = update {
+        it.copy(bridgeState = BridgeState.ROOT_NO_SHELL,
+            statusMessage = "未获取 Root 权限，请改用 Shizuku 模式或在 root 设备使用")
+    }
+
+    /** Shizuku 模式：已弹出授权请求，等待用户操作。 */
+    fun onWaitingPermission() = update {
+        it.copy(bridgeState = BridgeState.WAITING_PERMISSION,
+            statusMessage = "请在 Shizuku 弹窗中授权本应用")
+    }
+
+    /** 初始化模式（仅同步 UiState.mode，不重置状态，用于 Activity 启动时）。 */
+    fun initMode(mode: BridgeMode) = update { it.copy(mode = mode) }
+
+    /** 切换桥接来源模式（由 UI 触发）。同步重置状态以便 Activity 立即重新绑定。 */
+    fun setMode(mode: BridgeMode) {
+        val oldBridge = bridge
+        bridge = null
+        update {
+            it.copy(mode = mode, bridgeState = BridgeState.IDLE,
+                statusMessage = "已切换至${if (mode == BridgeMode.ROOT) "Root" else "Shizuku"}模式，请重新连接",
+                cdpConnected = false, probeOk = null, discoveryError = null,
+                version = null, httpTargets = emptyList(), abstractTargets = emptyList(),
+                selectedAbstract = null)
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            stopCdpInternal()
+            runCatching { oldBridge?.stopBridge() }
+        }
     }
 
     fun onBridgeConnected(b: ICdpBridge, port: Int) {
         bridge = b
         bridgePort = port
         discovery = TargetDiscovery(port)
-        update { it.copy(bridgeState = BridgeState.BOUND, statusMessage = "UserService 已绑定，可启动桥接") }
+        val m = _ui.value.mode
+        update { it.copy(bridgeState = BridgeState.BOUND,
+            statusMessage = "${if (m == BridgeMode.ROOT) "Root" else "Shizuku"} 服务已绑定，可启动桥接") }
         refreshAbstractTargets()
     }
 
@@ -284,6 +324,39 @@ class CdpViewModel : ViewModel() {
         }
     }
 
+    // ---------- Page 域：导航 / 重载 / 截图 ----------
+    // 对齐 Chrome DevTools 的页面控制能力（无需电脑即可在手机上触发）。
+
+    /** 重新加载当前页面（Page.reload）。 */
+    fun reloadPage() {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { c.send("Page.reload") }
+            update { it.copy(statusMessage = "已触发页面重载") }
+        }
+    }
+
+    /** 导航到指定 URL（Page.navigate）。 */
+    fun navigateTo(url: String) {
+        val c = cdp ?: return
+        if (url.isBlank()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val params = JsonObject().apply { addProperty("url", url) }
+            runCatching { c.send("Page.navigate", params) }
+            update { it.copy(statusMessage = "已导航至 $url") }
+        }
+    }
+
+    /** 截图当前页面（Page.captureScreenshot），返回 base64 PNG data url。 */
+    fun captureScreenshot(onResult: (String?) -> Unit) {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val res = runCatching { c.send("Page.captureScreenshot") }.getOrNull()
+            val data = res?.get("data")?.asString
+            onResult(data?.let { "data:image/png;base64,$it" })
+        }
+    }
+
     // ---------- CDP 客户端 ----------
 
     /** 连接某 page target 的 webSocketDebuggerUrl，并 enable 各域。 */
@@ -308,10 +381,13 @@ class CdpViewModel : ViewModel() {
             }
             update { it.copy(cdpConnected = true, statusMessage = "已连接 CDP：${target.displayTitle()}",
                 discoveryError = null) }
-            // enable 域
+            // enable 域：Runtime/Network/DOM/Debugger/Page，对齐 Chrome DevTools 连上即启用
             runCatching { c.send("Runtime.enable") }
             runCatching { c.send("Network.enable") }
             runCatching { c.send("DOM.enable") }
+            runCatching { c.send("Debugger.enable") }
+            runCatching { c.send("Page.enable") }
+            update { it.copy(sourcesEnabled = true) }
             // 独立协程订阅事件，断开时 cancel 即可退出 collect
             cdpJob = viewModelScope.launch(Dispatchers.IO) {
                 c.events.collect { ev -> handleEvent(ev) }
@@ -443,7 +519,7 @@ class CdpViewModel : ViewModel() {
         }
     }
 
-    // ---------- Network：拉响应体 ----------
+    // ---------- Network：拉响应体 / 重发 / 自定义请求 ----------
 
     /** 拉取某请求的响应体（Network.getResponseBody）。 */
     fun fetchNetworkBody(req: NetworkRequest) {
@@ -460,6 +536,137 @@ class CdpViewModel : ViewModel() {
             }
         }
     }
+
+    /**
+     * 重发已捕获的 XHR 请求（Network.replayXHR）。
+     * Chrome DevTools「Replay XHR」功能的等价实现：用原 requestId 重新发起，
+     * 请求头/body 与原请求一致。仅对 XHR/Fetch 类型有效（Document/Script 等不支持）。
+     * 来源: https://chromedevtools.github.io/devtools-protocol/tot/Network/#method-replayXHR
+     */
+    fun replayRequest(requestId: String) {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val params = JsonObject().apply { addProperty("requestId", requestId) }
+            val ok = runCatching { c.send("Network.replayXHR", params) }.isSuccess
+            update {
+                it.copy(statusMessage = if (ok) "已重发请求 $requestId（留意列表新增条目）"
+                    else "重发失败：replayXHR 仅支持 XHR/Fetch 类型")
+            }
+        }
+    }
+
+    /**
+     * 发送自定义请求（编辑后重发 / 改 token）。
+     *
+     * Chrome DevTools「Edit and Resend」的等价实现：在 page 上下文内用 fetch() 发起请求，
+     * 请求头/body 完全由调用方控制，可改 Authorization/Cookie 等 token。
+     *
+     * 实现：Runtime.evaluate 执行异步 fetch 并 awaitPromise。
+     * 用 try/catch 包 fetch 以便把网络错误也返回给 UI（避免 unhandled rejection）。
+     *
+     * @param url 目标 URL
+     * @param method HTTP 方法
+     * @param headers 请求头键值对（已包含用户修改的 token）
+     * @param body 请求体（GET/HEAD 自动忽略）
+     * @param onResult 回调：(status, statusText, 响应体预览) 或错误信息
+     */
+    fun sendCustomRequest(
+        url: String,
+        method: String,
+        headers: Map<String, String>,
+        body: String?,
+        onResult: (success: Boolean, summary: String) -> Unit
+    ) {
+        val c = cdp ?: return
+        if (url.isBlank()) {
+            onResult(false, "URL 不能为空")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            // 构造 fetch 调用：把 headers 转成 JS 对象字面量字符串
+            val headerJs = headers.entries.joinToString(", ") { (k, v) ->
+                "\"${escapeJs(k)}\":\"${escapeJs(v)}\""
+            }
+            val methodUpper = method.uppercase().ifBlank { "GET" }
+            val bodyArg = if (methodUpper == "GET" || methodUpper == "HEAD" || body.isNullOrBlank()) {
+                "undefined"
+            } else {
+                "\"${escapeJs(body)}\""
+            }
+            // 包一层 try/catch，避免 fetch 抛出的网络错误变成 unhandled rejection
+            val expression = """
+                (async () => {
+                    try {
+                        const resp = await fetch(${jsStr(url)}, {
+                            method: ${jsStr(methodUpper)},
+                            headers: { $headerJs },
+                            body: $bodyArg,
+                            credentials: 'include'
+                        });
+                        const text = await resp.text();
+                        return JSON.stringify({
+                            ok: true,
+                            status: resp.status,
+                            statusText: resp.statusText,
+                            headers: Object.fromEntries(resp.headers.entries()),
+                            body: text.substring(0, 2000)
+                        });
+                    } catch (e) {
+                        return JSON.stringify({ ok: false, error: String(e) });
+                    }
+                })()
+            """.trimIndent()
+            val params = JsonObject().apply {
+                addProperty("expression", expression)
+                addProperty("awaitPromise", true)
+                addProperty("returnByValue", true)
+                addProperty("userGesture", true)
+            }
+            val res = runCatching { c.send("Runtime.evaluate", params) }.getOrNull()
+            if (res == null) {
+                onResult(false, "CDP 调用失败")
+                return@launch
+            }
+            val exc = res.getAsJsonObject("exceptionDetails")
+            if (exc != null) {
+                val msg = exc.get("text")?.asString ?: "evaluate exception"
+                onResult(false, "执行失败：$msg")
+                return@launch
+            }
+            val resultVal = res.getAsJsonObject("result")?.get("value")?.asString
+            if (resultVal == null) {
+                onResult(false, "无返回值")
+                return@launch
+            }
+            try {
+                val parsed = com.google.gson.JsonParser.parseString(resultVal).asJsonObject
+                if (parsed.get("ok")?.asBoolean == true) {
+                    val status = parsed.get("status")?.asInt ?: 0
+                    val statusText = parsed.get("statusText")?.asString ?: ""
+                    val bodyPreview = parsed.get("body")?.asString ?: ""
+                    onResult(true, "$status $statusText\n${bodyPreview.take(500)}")
+                } else {
+                    val err = parsed.get("error")?.asString ?: "fetch failed"
+                    onResult(false, "请求失败：$err")
+                }
+            } catch (e: Throwable) {
+                onResult(false, "解析响应失败：${e.message}")
+            }
+        }
+    }
+
+    /** 把字符串转成 JS 字面量字符串（带引号），转义引号/反斜杠/换行。 */
+    private fun jsStr(s: String): String {
+        val escaped = s.replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+        return "\"$escaped\""
+    }
+
+    private fun escapeJs(s: String): String =
+        s.replace("\\", "\\\\").replace("\"", "\\\"")
+            .replace("\n", "\\n").replace("\r", "\\r")
 
     // ---------- Elements：DOM 编辑 ----------
 

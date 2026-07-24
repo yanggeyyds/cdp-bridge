@@ -14,16 +14,27 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Send
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -31,9 +42,11 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -46,6 +59,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.devtools.cdp.data.NetworkRequest
@@ -113,8 +127,22 @@ fun NetworkScreen(viewModel: CdpViewModel, state: UiState) {
                 )
             }
             Spacer(Modifier.weight(1f))
+            var showNewReqDialog by remember { mutableStateOf(false) }
+            IconButton(onClick = { showNewReqDialog = true }) {
+                Icon(Icons.Filled.Add, contentDescription = "新建请求")
+            }
             IconButton(onClick = { viewModel.clearNetwork(); expandedReqId = null }) {
                 Icon(Icons.Filled.Delete, contentDescription = "清空")
+            }
+            if (showNewReqDialog) {
+                EditAndResendDialog(
+                    initialUrl = "",
+                    initialMethod = "GET",
+                    initialHeaders = emptyMap(),
+                    initialBody = "",
+                    viewModel = viewModel,
+                    onDismiss = { showNewReqDialog = false }
+                )
             }
         }
 
@@ -202,7 +230,7 @@ fun NetworkScreen(viewModel: CdpViewModel, state: UiState) {
     }
 }
 
-/** 详情面板：Tab 切换 Headers/Response/Payload/Timing。 */
+/** 详情面板：操作按钮 + Tab 切换 Headers/Response/Payload/Timing。 */
 @Composable
 private fun NetworkDetailPanel(
     req: NetworkRequest,
@@ -210,9 +238,33 @@ private fun NetworkDetailPanel(
     context: Context
 ) {
     var tab by remember { mutableStateOf(DetailTab.HEADERS) }
+    var showEditDialog by remember { mutableStateOf(false) }
     val currentReq = state(req, viewModel)
 
     Column(modifier = Modifier.fillMaxWidth()) {
+        // 操作按钮行：重发 / 编辑后重发 / 复制 cURL
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ActionButton(
+                icon = Icons.Filled.Refresh,
+                label = "重发",
+                onClick = { viewModel.replayRequest(currentReq.requestId) }
+            )
+            ActionButton(
+                icon = Icons.Filled.Edit,
+                label = "编辑后重发",
+                onClick = { showEditDialog = true }
+            )
+            ActionButton(
+                icon = Icons.Filled.ContentCopy,
+                label = "cURL",
+                onClick = { copyToClipboard(context, toCurl(currentReq)) }
+            )
+        }
+
         TabRow(
             selectedTabIndex = tab.ordinal,
             containerColor = MaterialTheme.colorScheme.surfaceVariant
@@ -233,6 +285,179 @@ private fun NetworkDetailPanel(
             DetailTab.TIMING -> TimingTab(currentReq)
         }
     }
+
+    if (showEditDialog) {
+        EditAndResendDialog(
+            initialUrl = currentReq.url,
+            initialMethod = currentReq.method.ifBlank { "GET" },
+            initialHeaders = currentReq.requestHeaders,
+            initialBody = currentReq.postData ?: "",
+            viewModel = viewModel,
+            onDismiss = { showEditDialog = false }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ActionButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
+    androidx.compose.material3.TextButton(
+        onClick = onClick,
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+    ) {
+        Icon(icon, contentDescription = label, modifier = Modifier.size(16.dp),
+            tint = MaterialTheme.colorScheme.primary)
+        Text(" $label", style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary)
+    }
+}
+
+/**
+ * 编辑后重发对话框：可改 URL / Method / Headers / Body（含 token）。
+ * 对应 Chrome DevTools 的「Edit and Resend」右键菜单。
+ * 点发送后调用 [CdpViewModel.sendCustomRequest] 在 page 上下文 fetch。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun EditAndResendDialog(
+    initialUrl: String,
+    initialMethod: String,
+    initialHeaders: Map<String, String>,
+    initialBody: String,
+    viewModel: CdpViewModel,
+    onDismiss: () -> Unit
+) {
+    var url by remember { mutableStateOf(initialUrl) }
+    var method by remember { mutableStateOf(initialMethod) }
+    // headers 用可变 list 维护，便于逐行增删
+    val headers = remember {
+        mutableStateOf(initialHeaders.entries.map { it.key to it.value }.toMutableList())
+    }
+    var body by remember { mutableStateOf(initialBody) }
+    var result by remember { mutableStateOf<String?>(null) }
+    var sending by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("编辑并重发", style = MaterialTheme.typography.titleMedium) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                OutlinedTextField(
+                    value = url, onValueChange = { url = it },
+                    label = { Text("URL") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                )
+                OutlinedTextField(
+                    value = method, onValueChange = { method = it.uppercase() },
+                    label = { Text("Method") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                )
+                Text("Headers", style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary)
+                headers.value.forEachIndexed { i, (k, v) ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = k, onValueChange = { nk ->
+                                headers.value = headers.value.toMutableList().also {
+                                    it[i] = nk to it[i].second
+                                }
+                            },
+                            placeholder = { Text("Key") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(":", modifier = Modifier.padding(horizontal = 4.dp))
+                        OutlinedTextField(
+                            value = v, onValueChange = { nv ->
+                                headers.value = headers.value.toMutableList().also {
+                                    it[i] = it[i].first to nv
+                                }
+                            },
+                            placeholder = { Text("Value") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1.2f)
+                        )
+                        IconButton(onClick = {
+                            headers.value = headers.value.toMutableList().also { it.removeAt(i) }
+                        }) {
+                            Icon(Icons.Filled.Close, contentDescription = "删除头",
+                                modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
+                TextButton(onClick = {
+                    headers.value = headers.value.toMutableList().also { it.add("" to "") }
+                }) {
+                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Text(" 添加 Header")
+                }
+                OutlinedTextField(
+                    value = body, onValueChange = { body = it },
+                    label = { Text("Body (POST/PUT)") },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    minLines = 2, maxLines = 5
+                )
+                result?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Card(colors = CardDefaults.cardColors(
+                        containerColor = if (it.startsWith("✓"))
+                            MaterialTheme.colorScheme.secondaryContainer
+                        else MaterialTheme.colorScheme.errorContainer
+                    )) {
+                        Text(it, modifier = Modifier.padding(8.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !sending && url.isNotBlank(),
+                onClick = {
+                    sending = true
+                    result = "发送中…"
+                    val hdrMap = headers.value.filter { it.first.isNotBlank() }
+                        .associate { it.first to it.second }
+                    viewModel.sendCustomRequest(url, method, hdrMap, body) { ok, summary ->
+                        result = (if (ok) "✓ " else "✗ ") + summary
+                        sending = false
+                    }
+                }
+            ) {
+                Icon(Icons.Filled.Send, contentDescription = null, modifier = Modifier.size(16.dp))
+                Text(" 发送")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("关闭") }
+        }
+    )
+}
+
+/** 把 NetworkRequest 转成 cURL 命令，便于复制到终端复现。 */
+private fun toCurl(req: NetworkRequest): String {
+    val sb = StringBuilder()
+    sb.append("curl -X ${req.method.ifBlank { "GET" }}")
+    sb.append(" '${req.url}'")
+    req.requestHeaders.forEach { (k, v) ->
+        sb.append(" \\\n  -H '${k}: ${v.replace("'", "'\\''")}'")
+    }
+    req.postData?.takeIf { it.isNotBlank() }?.let {
+        sb.append(" \\\n  --data-raw '${it.replace("'", "'\\''")}'")
+    }
+    return sb.toString()
 }
 
 /** 取最新请求（避免本地 req 是旧引用，body 拉到后会更新）。 */

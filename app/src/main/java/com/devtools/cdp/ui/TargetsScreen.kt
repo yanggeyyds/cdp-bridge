@@ -110,6 +110,11 @@ fun TargetsScreen(viewModel: CdpViewModel, state: UiState) {
                     ) {
                         OutlinedButton(onClick = { viewModel.refreshVersion() }) { Text("版本") }
                         OutlinedButton(onClick = { viewModel.refreshHttpTargets() }) { Text("Targets") }
+                        // 页面控制：重载（Page.reload），对齐 DevTools 的刷新按钮
+                        OutlinedButton(
+                            onClick = { viewModel.reloadPage() },
+                            enabled = state.cdpConnected
+                        ) { Text("重载") }
                     }
                 }
             }
@@ -341,25 +346,48 @@ private fun DiagnosticsCard(state: UiState, viewModel: CdpViewModel) {
  */
 @Composable
 private fun ConnectionGuide(state: UiState) {
-    // 根据 bridgeState 推导当前所在步骤（1..5），已完成步骤 < currentStep
-    val currentStep = when (state.bridgeState) {
-        BridgeState.IDLE,
-        BridgeState.SHIZUKU_NOT_RUNNING,
-        BridgeState.SHIZUKU_TOO_OLD,
-        BridgeState.BINDER_DEAD -> 1
-        BridgeState.WAITING_PERMISSION,
-        BridgeState.PERMISSION_DENIED,
-        BridgeState.BIND_FAILED -> 2
-        BridgeState.BOUND -> if (state.abstractTargets.isEmpty()) 3 else 4
-        BridgeState.BRIDGE_RUNNING -> 5
+    // 根据 mode + bridgeState 推导当前所在步骤（1..5），已完成步骤 < currentStep
+    val currentStep = if (state.mode == BridgeMode.ROOT) {
+        when (state.bridgeState) {
+            BridgeState.IDLE,
+            BridgeState.ROOT_NO_SHELL,
+            BridgeState.BINDER_DEAD,
+            BridgeState.BIND_FAILED -> 1
+            BridgeState.BOUND -> if (state.abstractTargets.isEmpty()) 2 else 3
+            BridgeState.BRIDGE_RUNNING -> 5
+            else -> 1
+        }
+    } else {
+        when (state.bridgeState) {
+            BridgeState.IDLE,
+            BridgeState.SHIZUKU_NOT_RUNNING,
+            BridgeState.SHIZUKU_TOO_OLD,
+            BridgeState.BINDER_DEAD -> 1
+            BridgeState.WAITING_PERMISSION,
+            BridgeState.PERMISSION_DENIED,
+            BridgeState.BIND_FAILED -> 2
+            BridgeState.BOUND -> if (state.abstractTargets.isEmpty()) 3 else 4
+            BridgeState.BRIDGE_RUNNING -> 5
+            else -> 1
+        }
     }
-    val steps = listOf(
-        GuideStep(1, "启动 Shizuku 服务", "在 Shizuku App 内启动服务（≈ 开启 USB 调试 + 连数据线）"),
-        GuideStep(2, "授权本应用", "允许本应用使用 Shizuku（≈ adb 授权弹窗）"),
-        GuideStep(3, "打开 Chrome 网页", "在要调试的 Chrome / WebView 打开目标页面"),
-        GuideStep(4, "启动桥接", "把 abstract socket 桥到 127.0.0.1:9222（≈ adb forward）"),
-        GuideStep(5, "点 Inspect", "连接 CDP WebSocket，开始抓 Console / Network / DOM")
-    )
+    val steps = if (state.mode == BridgeMode.ROOT) {
+        listOf(
+            GuideStep(1, "授予 Root 权限", "允许本应用获取 root（首次会弹授权弹窗）"),
+            GuideStep(2, "Root 服务就绪", "RootService 已绑定，可启动桥接"),
+            GuideStep(3, "打开 Chrome 网页", "在要调试的 Chrome / WebView 打开目标页面"),
+            GuideStep(4, "启动桥接", "把 abstract socket 桥到 127.0.0.1:9222（≈ adb forward）"),
+            GuideStep(5, "点 Inspect", "连接 CDP WebSocket，开始抓 Console / Network / DOM")
+        )
+    } else {
+        listOf(
+            GuideStep(1, "启动 Shizuku 服务", "在 Shizuku App 内启动服务（≈ 开启 USB 调试 + 连数据线）"),
+            GuideStep(2, "授权本应用", "允许本应用使用 Shizuku（≈ adb 授权弹窗）"),
+            GuideStep(3, "打开 Chrome 网页", "在要调试的 Chrome / WebView 打开目标页面"),
+            GuideStep(4, "启动桥接", "把 abstract socket 桥到 127.0.0.1:9222（≈ adb forward）"),
+            GuideStep(5, "点 Inspect", "连接 CDP WebSocket，开始抓 Console / Network / DOM")
+        )
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -369,7 +397,10 @@ private fun ConnectionGuide(state: UiState) {
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Text(
-                "连接向导 · 无需电脑（等价 chrome://inspect + adb forward）",
+                if (state.mode == BridgeMode.ROOT)
+                    "连接向导 · Root 模式（无需电脑，等价 chrome://inspect + adb forward）"
+                else
+                    "连接向导 · Shizuku 模式（无需电脑/Root，等价 chrome://inspect + adb forward）",
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onPrimaryContainer,
                 style = MaterialTheme.typography.labelMedium

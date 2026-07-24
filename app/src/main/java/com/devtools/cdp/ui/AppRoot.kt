@@ -11,9 +11,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -23,12 +26,15 @@ import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -53,7 +59,7 @@ private enum class CdpTab(val title: String) {
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AppRoot(viewModel: CdpViewModel) {
+fun AppRoot(viewModel: CdpViewModel, onModeChange: (BridgeMode) -> Unit) {
     val state by viewModel.ui.collectAsState()
 
     var tabIndex by rememberSaveable { mutableIntStateOf(0) }
@@ -79,6 +85,8 @@ fun AppRoot(viewModel: CdpViewModel) {
                     }
                 },
                 actions = {
+                    // 模式切换：Root / Shizuku
+                    ModeSwitcher(state.mode, onModeChange)
                     // 状态指示 dot（红/黄/绿）
                     StatusDot(state.bridgeState, modifier = Modifier.padding(end = 4.dp))
                     IconButton(onClick = { viewModel.refreshAbstractTargets() }) {
@@ -148,6 +156,7 @@ private fun BridgeState.colors(): Pair<Color, String> = when (this) {
     BridgeState.WAITING_PERMISSION -> Color(0xFFFBBC04) to "等待授权"
     BridgeState.BIND_FAILED -> Color(0xFFEA4335) to "绑定失败"
     BridgeState.BINDER_DEAD -> Color(0xFFEA4335) to "Binder 死亡"
+    BridgeState.ROOT_NO_SHELL -> Color(0xFFEA4335) to "无 Root"
     BridgeState.BOUND -> Color(0xFFFBBC04) to "已绑定"
     BridgeState.BRIDGE_RUNNING -> Color(0xFF34A853) to "桥接中"
 }
@@ -174,6 +183,35 @@ private fun StatusDot(state: BridgeState, modifier: Modifier = Modifier) {
     }
 }
 
+/** 模式切换器：Root（默认，需 root 设备）/ Shizuku（非 Root，需 Shizuku App）。 */
+@Composable
+private fun ModeSwitcher(currentMode: BridgeMode, onChange: (BridgeMode) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    androidx.compose.foundation.layout.Box {
+        TextButton(onClick = { expanded = true }) {
+            Text(
+                if (currentMode == BridgeMode.ROOT) "Root" else "Shizuku",
+                style = MaterialTheme.typography.labelMedium
+            )
+            Icon(
+                Icons.Filled.ArrowDropDown,
+                contentDescription = "切换模式",
+                modifier = Modifier.size(18.dp)
+            )
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(
+                text = { Text("Root 模式（需 root）") },
+                onClick = { expanded = false; onChange(BridgeMode.ROOT) }
+            )
+            DropdownMenuItem(
+                text = { Text("Shizuku 模式（非 root）") },
+                onClick = { expanded = false; onChange(BridgeMode.SHIZUKU) }
+            )
+        }
+    }
+}
+
 /** 顶部状态条：显示当前连接步骤进度 + 状态消息 + 桥接端点。 */
 @Composable
 private fun StatusBar(state: UiState) {
@@ -182,6 +220,7 @@ private fun StatusBar(state: UiState) {
         BridgeState.IDLE,
         BridgeState.SHIZUKU_NOT_RUNNING,
         BridgeState.SHIZUKU_TOO_OLD,
+        BridgeState.ROOT_NO_SHELL,
         BridgeState.BINDER_DEAD -> 1 to 5
         BridgeState.WAITING_PERMISSION,
         BridgeState.PERMISSION_DENIED,
@@ -201,7 +240,9 @@ private fun StatusBar(state: UiState) {
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
-                text = state.statusMessage.ifBlank { "等待 Shizuku…" },
+                text = state.statusMessage.ifBlank {
+                    if (state.mode == BridgeMode.ROOT) "等待 Root 授权…" else "等待 Shizuku…"
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f)

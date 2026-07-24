@@ -13,8 +13,8 @@ android {
         applicationId = "com.devtools.cdp"
         minSdk = 24
         targetSdk = 34
-        versionCode = 8
-        versionName = "1.7"
+        versionCode = 9
+        versionName = "1.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
@@ -112,6 +112,12 @@ dependencies {
 
     // ---- Coroutines ----
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
+    // ---- libsu (Root 模式：RootService 以 root 进程承载 CdpBridgeService) ----
+    // 来源: https://github.com/topjohnwu/libsu
+    // core 提供 Shell（探测 root），service 提供 RootService（AIDL 跨 root 进程）
+    implementation("com.github.topjohnwu.libsu:core:5.2.2")
+    implementation("com.github.topjohnwu.libsu:service:5.2.2")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
