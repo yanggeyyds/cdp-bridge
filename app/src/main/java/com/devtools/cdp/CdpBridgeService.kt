@@ -198,11 +198,12 @@ class CdpBridgeService : ICdpBridge.Stub() {
      *
      * 实现思路：
      *  1. 读 /proc/net/unix，过滤 @*_devtools_remote，记录 (name, inode)；
-     *  2. 反查 pid：遍历 /proc/<pid>/fd/*，找到符号链接目标含 "socket:[inode]" 的 fd，
-     *     即该 inode 的真正持有进程。这是唯一可靠的反查方式 ——
-     *     /proc/<pid>/net/unix 是内核全局视图，所有进程都能看到全部 abstract socket，
-     *     用它反查会把第一个能读到该文件的进程（如权限管理器）误判为 socket 创建者。
-     *  3. 读 /proc/<pid>/cmdline 拿进程名/包名。
+     *  2. 反查 pid（best-effort）：遍历各 pid 的 fd 目录找 "socket:[inode]" 符号链接。
+     *     注意：shell UID（Shizuku）读不了其他进程的 /proc/<pid>/fd（权限 0500），
+     *     所以此步在 Shizuku 模式下常拿不到 pid；/proc/<pid>/net/unix 是内核全局视图，
+     *     用它反查会把第一个能读到该文件的进程（如权限管理器）误判为 socket 创建者，故弃用。
+     *  3. 组装：abstract socket 名本身编码了应用标识（<package>_devtools_remote），
+     *     去掉后缀即得包名，作为可靠兜底；pid 反查到 cmdline 时作增强。
      *
      * 返回 "abstractName\t进程名\t包名"。
      */
@@ -230,8 +231,10 @@ class CdpBridgeService : ICdpBridge.Stub() {
             }
             if (nameToInode.isEmpty()) return out
 
-            // 2. 反查 pid：遍历 /proc/*/fd/* 找 "socket:[inode]" 符号链接
-            // 这才能确认 inode 真正归属哪个进程（fd 是进程私有的）
+            // 2. 反查 pid（best-effort）：遍历各 pid 的 fd 目录找 "socket:[inode]" 符号链接。
+            //    注意：shell UID（Shizuku）无法读其他进程的 /proc/<pid>/fd（目录权限 0500），
+            //    所以这里在 Shizuku 模式下通常拿不到 pid —— 没关系，第 3 步用 socket 名兜底。
+            //    Root 模式下可读到，能拿到真实 cmdline。
             val inodeToPid = mutableMapOf<Long, Int>()
             val targetInodes = nameToInode.values.toSet()
             File("/proc").listFiles()?.forEach { procDir ->
@@ -252,8 +255,16 @@ class CdpBridgeService : ICdpBridge.Stub() {
                 }
             }
 
-            // 3. 读 /proc/<pid>/cmdline 拿进程名/包名
+            // 3. 组装结果。关键：abstract socket 名本身就编码了应用标识，格式为
+            //    <package_or_process>_devtools_remote（如 com.android.chrome_devtools_remote）。
+            //    即使 pid 反查失败（shell UID 权限受限），也能从 socket 名拿到可靠包名，
+            //    UI 侧 PackageManager 可据此反查应用名。cmdline 仅作增强（多进程场景更准）。
             nameToInode.forEach { (sockName, inode) ->
+                // 从 socket 名提取包名：去 _devtools_remote 后缀，再去多进程的 :process 后缀
+                val pkgFromSocket = sockName
+                    .substringBefore("_devtools_remote")
+                    .let { if (it.contains(":")) it.substringBefore(":") else it }
+
                 val pid = inodeToPid[inode] ?: -1
                 var procName = ""
                 if (pid > 0) {
@@ -263,8 +274,11 @@ class CdpBridgeService : ICdpBridge.Stub() {
                         }
                     } catch (_: Throwable) {}
                 }
-                val pkgName = procName.substringBefore(':')
-                out.add("$sockName\t$procName\t$pkgName")
+                // 包名：优先 cmdline（去多进程后缀），否则用 socket 名推导
+                val pkgName = if (procName.isNotBlank()) procName.substringBefore(':') else pkgFromSocket
+                // 进程名：cmdline 拿不到就用 socket 名推导的包名兜底
+                val finalProc = procName.ifBlank { pkgFromSocket }
+                out.add("$sockName\t$finalProc\t$pkgName")
             }
         } catch (e: Throwable) {
             Log.e(TAG, "listTargetsWithInfo failed: ${e.message}")

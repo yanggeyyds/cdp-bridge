@@ -205,8 +205,9 @@ fun ElementsScreen(viewModel: CdpViewModel, state: UiState) {
         }
     }
 
-    // 编辑对话框
-    editAction?.let { action ->
+    // 编辑对话框：必须用 if/else 而非 ?.let，否则 @Composable 调用会破坏组结构
+    val action = editAction
+    if (action != null) {
         EditDialog(
             action = action,
             onDismiss = { editAction = null },
@@ -221,7 +222,7 @@ fun ElementsScreen(viewModel: CdpViewModel, state: UiState) {
                     is EditAction.EditText -> viewModel.setNodeValue(action.nodeId, result.second)
                     is EditAction.EditHTML -> viewModel.setOuterHTML(action.nodeId, result.second)
                     is EditAction.DeleteNode -> {
-                        // 删除节点：用 setOuterHTML 替换为空
+                        // 删除节点：用 setInnerHTML 替换为空
                         viewModel.setInnerHTML(action.nodeId, "")
                     }
                 }

@@ -145,7 +145,8 @@ fun TargetsScreen(viewModel: CdpViewModel, state: UiState) {
                             }
                         ) { Text(if (cacheDisabled) "启用缓存" else "禁用缓存") }
                     }
-                    pageInfo?.let { info ->
+                    val info = pageInfo
+                    if (info != null) {
                         Spacer(Modifier.height(6.dp))
                         Text(info, style = MaterialTheme.typography.bodySmall,
                             fontFamily = FontFamily.Monospace,

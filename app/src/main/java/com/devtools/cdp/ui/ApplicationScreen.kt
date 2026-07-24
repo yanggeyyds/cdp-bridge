@@ -187,13 +187,14 @@ private fun CookiesTab(state: UiState, viewModel: CdpViewModel) {
         }
     }
 
-    editing?.let { c ->
+    val editCookie = editing
+    if (editCookie != null) {
         CookieEditDialog(
             title = "编辑 Cookie",
-            initialName = c.name,
-            initialValue = c.value,
-            initialDomain = c.domain,
-            initialPath = c.path,
+            initialName = editCookie.name,
+            initialValue = editCookie.value,
+            initialDomain = editCookie.domain,
+            initialPath = editCookie.path,
             onDismiss = { editing = null },
             onConfirm = { n, v, d, p ->
                 viewModel.setCookie(n, v, d, p)
@@ -282,11 +283,12 @@ private fun StorageTab(which: String, items: List<StorageItem>, viewModel: CdpVi
         }
     }
 
-    editing?.let { item ->
+    val editItem = editing
+    if (editItem != null) {
         StorageEditDialog(
             title = "编辑 $which",
-            initialKey = item.key,
-            initialValue = item.value,
+            initialKey = editItem.key,
+            initialValue = editItem.value,
             keyEditable = false,
             onDismiss = { editing = null },
             onConfirm = { k, v ->

@@ -286,14 +286,18 @@ private fun ConsoleMessageRow(
                 )
                 // 展开内容：对象 preview / 堆栈
                 if (isExpanded) {
-                    row.expandedContent()?.let { Text(it,
-                        fontFamily = FontFamily.Monospace,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(start = 12.dp, top = 2.dp)) }
+                    val expanded = row.expandedContent()
+                    if (expanded != null) {
+                        Text(expanded,
+                            fontFamily = FontFamily.Monospace,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 12.dp, top = 2.dp))
+                    }
                 }
                 // 来源 url:line
-                row.sourceLine()?.let { src ->
+                val src = row.sourceLine()
+                if (src != null) {
                     Text(
                         src,
                         style = MaterialTheme.typography.labelSmall,

@@ -408,14 +408,15 @@ private fun EditAndResendDialog(
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                     minLines = 2, maxLines = 5
                 )
-                result?.let {
+                val res = result
+                if (res != null) {
                     Spacer(Modifier.height(8.dp))
                     Card(colors = CardDefaults.cardColors(
-                        containerColor = if (it.startsWith("✓"))
+                        containerColor = if (res.startsWith("✓"))
                             MaterialTheme.colorScheme.secondaryContainer
                         else MaterialTheme.colorScheme.errorContainer
                     )) {
-                        Text(it, modifier = Modifier.padding(8.dp),
+                        Text(res, modifier = Modifier.padding(8.dp),
                             style = MaterialTheme.typography.bodySmall,
                             fontFamily = FontFamily.Monospace)
                     }
