@@ -18,10 +18,16 @@ data class CdpEvent(
 
 /** Console 日志条目（来自 Runtime.consoleAPICalled）。 */
 data class ConsoleEntry(
-    val level: String,            // log/info/warning/error/debug
-    val text: String,
+    val level: String,            // log/info/warning/error/debug/verbose
+    /** console.log 的参数（已是 RemoteObject 列表，保留对象结构可展开）。 */
+    val args: List<RemoteObject> = emptyList(),
+    /** 兜底纯文本（args 为空时用，或 CDP 直接给的 text）。 */
+    val text: String = "",
+    /** 调用栈（callFrames 拼成的可读串）。 */
+    val stackTrace: String? = null,
     val url: String? = null,
     val lineNumber: Int? = null,
+    val columnNumber: Int? = null,
     val timestamp: Long = System.currentTimeMillis()
 )
 
@@ -29,6 +35,8 @@ data class ConsoleEntry(
 data class ExceptionEntry(
     val text: String,
     val stackTrace: String? = null,
+    val url: String? = null,
+    val lineNumber: Int? = null,
     val timestamp: Long = System.currentTimeMillis()
 )
 

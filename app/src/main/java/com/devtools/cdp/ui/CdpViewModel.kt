@@ -343,18 +343,53 @@ class CdpViewModel : ViewModel() {
     fun evaluateExpression(expression: String) {
         val c = cdp ?: return
         viewModelScope.launch(Dispatchers.IO) {
+            // 关键：returnByValue=false + generatePreview=true，这样返回的 RemoteObject
+            // 带 description 和 preview，能在 UI 像原版 DevTools 一样展开对象/数组。
+            // 来源: https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#method-evaluate
             val params = JsonObject().apply {
                 addProperty("expression", expression)
-                addProperty("returnByValue", true)
+                addProperty("returnByValue", false)
+                addProperty("generatePreview", true)
+                addProperty("awaitPromise", true)
+                addProperty("userGesture", true)
             }
             val result = runCatching { c.send("Runtime.evaluate", params) }.getOrNull()
-            val text = if (result != null) {
-                val res = result.getAsJsonObject("result")
-                val v = res?.get("value")
-                val desc = res?.get("description")
-                v?.toString() ?: desc?.asString ?: result.toString()
-            } else "(eval error)"
-            pushConsole(ConsoleEntry(level = "info", text = "→ $expression\n$text"))
+            if (result == null) {
+                pushConsole(ConsoleEntry(level = "error", text = "→ $expression\n(eval 失败：无响应)"))
+                return@launch
+            }
+            // 异常分支：Runtime.evaluate 的 exceptionDetails
+            val excDetails = result.getAsJsonObject("exceptionDetails")
+            if (excDetails != null) {
+                val text = excDetails.get("text")?.asString
+                    ?: excDetails.getAsJsonObject("exception")?.get("description")?.asString
+                    ?: "eval exception"
+                val st = excDetails.getAsJsonObject("stackTrace")
+                val trace = formatStackTrace(st)
+                val url = st?.getAsJsonArray("callFrames")?.firstOrNull()?.asJsonObject?.let { f ->
+                    f.get("url")?.asString
+                }
+                val line = st?.getAsJsonArray("callFrames")?.firstOrNull()?.asJsonObject?.get("lineNumber")?.asInt
+                pushConsole(ConsoleEntry(
+                    level = "error",
+                    text = "→ $expression\n$text",
+                    stackTrace = trace, url = url, lineNumber = line
+                ))
+                return@launch
+            }
+            // 正常分支：result 是 RemoteObject，保留结构可展开
+            val resObj = result.getAsJsonObject("result")
+            val remote = com.devtools.cdp.data.RemoteObject.parse(resObj)
+            if (remote != null) {
+                // 把表达式作为"输入提示"，返回值作为可展开对象
+                pushConsole(ConsoleEntry(
+                    level = "info",
+                    args = listOf(remote),
+                    text = "→ $expression"
+                ))
+            } else {
+                pushConsole(ConsoleEntry(level = "info", text = "→ $expression\n(无返回值)"))
+            }
         }
     }
 
@@ -391,25 +426,54 @@ class CdpViewModel : ViewModel() {
 
     // ---------- 事件分发 ----------
 
+    /** 把 CDP stackTrace.callFrames 格式化成可读调用栈（每帧一行）。 */
+    private fun formatStackTrace(st: com.google.gson.JsonObject?): String? {
+        val frames = st?.getAsJsonArray("callFrames") ?: return null
+        if (frames.size() == 0) return null
+        return frames.joinToString("\n") { f ->
+            val o = f.asJsonObject
+            val fn = o.get("functionName")?.asString?.ifEmpty { "(anonymous)" } ?: "(anonymous)"
+            val url = o.get("url")?.asString ?: "<unknown>"
+            val line = o.get("lineNumber")?.asInt
+            val col = o.get("columnNumber")?.asInt
+            val loc = if (line != null && col != null) "$url:$line:$col"
+                      else if (line != null) "$url:$line" else url
+            "  at $fn ($loc)"
+        }
+    }
+
     private fun handleEvent(ev: CdpEvent) {
         when (ev.method) {
             "Runtime.consoleAPICalled" -> {
+                // 完整解析：args 转成 RemoteObject 列表（保留对象结构可展开），
+                // stackTrace 提取调用栈，第一帧 url+line 作为来源定位。
                 val level = ev.params.get("type")?.asString ?: "log"
-                val args = ev.params.getAsJsonArray("args")
-                val text = args?.joinToString(" ") { it.asJsonObject?.get("value")?.asString ?: it.toString() } ?: ""
+                val argsArr = ev.params.getAsJsonArray("args")
+                val args = argsArr?.mapNotNull { com.devtools.cdp.data.RemoteObject.parse(it) } ?: emptyList()
                 val st = ev.params.getAsJsonObject("stackTrace")
-                val url = st?.getAsJsonArray("callFrames")?.firstOrNull()?.asJsonObject?.get("url")?.asString
-                pushConsole(ConsoleEntry(level = level, text = text, url = url))
+                val firstFrame = st?.getAsJsonArray("callFrames")?.firstOrNull()?.asJsonObject
+                pushConsole(ConsoleEntry(
+                    level = level,
+                    args = args,
+                    stackTrace = formatStackTrace(st),
+                    url = firstFrame?.get("url")?.asString,
+                    lineNumber = firstFrame?.get("lineNumber")?.asInt,
+                    columnNumber = firstFrame?.get("columnNumber")?.asInt
+                ))
             }
             "Runtime.exceptionThrown" -> {
                 val details = ev.params.getAsJsonObject("exceptionDetails")
-                val text = details?.get("text")?.asString ?: "exception"
+                val exc = details?.getAsJsonObject("exception")
+                val text = exc?.get("description")?.asString
+                    ?: details?.get("text")?.asString ?: "exception"
                 val st = details?.getAsJsonObject("stackTrace")
-                val trace = st?.getAsJsonArray("callFrames")?.joinToString("\n") {
-                    val f = it.asJsonObject
-                    "  at ${f.get("functionName")?.asString ?: ""} (${f.get("url")?.asString ?: ""}:${f.get("lineNumber")?.asString ?: ""})"
-                }
-                pushException(ExceptionEntry(text = text, stackTrace = trace))
+                val firstFrame = st?.getAsJsonArray("callFrames")?.firstOrNull()?.asJsonObject
+                pushException(ExceptionEntry(
+                    text = text,
+                    stackTrace = formatStackTrace(st),
+                    url = firstFrame?.get("url")?.asString,
+                    lineNumber = firstFrame?.get("lineNumber")?.asInt
+                ))
             }
             "Network.requestWillBeSent" -> {
                 val rid = ev.params.get("requestId")?.asString ?: return
