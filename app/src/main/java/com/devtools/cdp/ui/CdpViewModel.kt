@@ -276,12 +276,20 @@ class CdpViewModel : ViewModel() {
             stopCdpInternal()
             val c = CdpClient()
             cdp = c
-            val opened = withContext(Dispatchers.IO) { c.connect(wsUrl) }
-            if (!opened) {
-                update { it.copy(statusMessage = "CDP WebSocket 连接失败：$wsUrl") }
+            update { it.copy(statusMessage = "正在连接 CDP WebSocket…", discoveryError = null) }
+            val result = withContext(Dispatchers.IO) { c.connect(wsUrl) }
+            if (result !is CdpClient.ConnectResult.Ok) {
+                // 关键修复：原代码只显示 URL，看不到真实原因；
+                // 现在把 ConnectResult 翻译成可读诊断，便于定位
+                val diag = describeConnectError(result, wsUrl)
+                update { it.copy(cdpConnected = false,
+                    statusMessage = "CDP WebSocket 连接失败",
+                    discoveryError = diag) }
+                Log.e(TAG, "connectTarget failed: $diag")
                 return@launch
             }
-            update { it.copy(cdpConnected = true, statusMessage = "已连接 CDP：${target.displayTitle()}") }
+            update { it.copy(cdpConnected = true, statusMessage = "已连接 CDP：${target.displayTitle()}",
+                discoveryError = null) }
             // enable 域
             runCatching { c.send("Runtime.enable") }
             runCatching { c.send("Network.enable") }
@@ -291,6 +299,28 @@ class CdpViewModel : ViewModel() {
                 c.events.collect { ev -> handleEvent(ev) }
             }
         }
+    }
+
+    /** 把 [CdpClient.ConnectResult] 翻译成人类可读诊断。 */
+    private fun describeConnectError(r: CdpClient.ConnectResult, wsUrl: String): String = when (r) {
+        CdpClient.ConnectResult.Ok -> ""
+        is CdpClient.ConnectResult.HttpRejected -> {
+            val hint = when (r.code) {
+                401 -> "401 Unauthorized：target id 可能已失效（页面刷新/关闭/切换），重新点 Targets 刷新"
+                403 -> "403 Forbidden：Origin/Host 校验失败，或 Chrome 拒绝非授权客户端"
+                404 -> "404 Not Found：target 不存在（页面已销毁）"
+                else -> "HTTP ${r.code}"
+            }
+            "$hint\nURL: $wsUrl" + (r.body?.let { "\n响应: ${it.take(200)}" } ?: "")
+        }
+        CdpClient.ConnectResult.CleartextBlocked ->
+            "明文 ws:// 被 Android 网络安全策略拦截（CLEARTEXT not permitted）。" +
+            "需 networkSecurityConfig 允许 localhost cleartext"
+        CdpClient.ConnectResult.Timeout ->
+            "WebSocket 握手 8s 超时：Chrome 可能未响应 WS 升级请求" +
+            "（页面已后台/锁屏/被杀），保持页面前台后重试"
+        is CdpClient.ConnectResult.Error ->
+            "WebSocket 连接异常：${r.throwable.javaClass.simpleName}: ${r.throwable.message}"
     }
 
     fun disconnectTarget() {

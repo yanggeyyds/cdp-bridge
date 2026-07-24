@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicLong
  *   来源: https://github.com/square/okhttp/blob/master/okhttp/src/commonJvmAndroid/kotlin/okhttp3/internal/connection/RealCall.kt
  *   来源: https://github.com/square/okhttp/blob/master/okhttp/src/commonJvmAndroid/kotlin/okhttp3/internal/ws/RealWebSocket.kt
  *   来源: https://square.github.io/okhttp/interceptors/
- *   来源: https://www.ibm.com/docs/fr/devops-test-ui/10.5.2?topic=tiutp-unable-record-run-web-ui-tests-chrome-111-edge-112
+ *   来源: https://www.ibm.com/docs/fr/devops-test-ui/1.5.2?topic=tiutp-unable-record-run-web-ui-tests-chrome-111-edge-112
  *
  * 协程模式：
  *   - send(method, params):Long 自增 id，把 CompletableDeferred 存进 Map<id, deferred>，
@@ -66,16 +66,42 @@ class CdpClient(
     @Volatile var isOpen: Boolean = false
         private set
 
-    /** 连接 webSocketDebuggerUrl。返回是否成功打开。 */
-    fun connect(wsUrl: String): Boolean {
+    /**
+     * 连接结果：携带真实失败原因，便于 UI 诊断。
+     *
+     * - [Ok]：WS 握手成功；
+     * - [HttpRejected]：握手返回非 101（Chrome 返回 401/403/404 等），含 code + body；
+     * - [CleartextBlocked]：Android 网络安全策略禁明文 ws://；
+     * - [Timeout]：8s 内未完成握手；
+     * - [Error]：其他异常（连接 reset / IOException 等），含 throwable。
+     */
+    sealed class ConnectResult {
+        data object Ok : ConnectResult()
+        data class HttpRejected(val code: Int, val body: String?) : ConnectResult()
+        data object CleartextBlocked : ConnectResult()
+        data object Timeout : ConnectResult()
+        data class Error(val throwable: Throwable) : ConnectResult()
+    }
+
+    /** 连接 webSocketDebuggerUrl。返回 [ConnectResult] 携带真实失败原因。 */
+    fun connect(wsUrl: String): ConnectResult {
         close()
-        val req = Request.Builder().url(wsUrl).build()
+        // 关键：显式设 Host: localhost:9222。
+        // rewriteWsUrl 为保证 OkHttp 连到本机桥接，把 host 改成了 127.0.0.1，
+        // OkHttp 默认 Host 头取自 URL 会是 "127.0.0.1:9222"。
+        // 但 Chrome DevTools 后端期望 Host 与它返回的 wsUrl（localhost:9222）一致，
+        // 部分版本对 Host=127.0.0.1 会返回 403 Forbidden。
+        // 显式覆盖成 localhost:9222 匹配 Chrome 期望，同时 URL 仍是 127.0.0.1 走本机桥接。
+        val req = Request.Builder()
+            .url(wsUrl)
+            .header("Host", "localhost:9222")
+            .build()
         val latch = java.util.concurrent.CountDownLatch(1)
-        var opened = false
+        var result: ConnectResult = ConnectResult.Timeout
         ws = client.newWebSocket(req, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 isOpen = true
-                opened = true
+                result = ConnectResult.Ok
                 latch.countDown()
             }
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -89,12 +115,41 @@ class CdpClient(
                 failAll(RuntimeException("WS closed: $code $reason"))
             }
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                // 关键修复：原实现只 failAll(t)，但 latch 没 countDown，
+                // 调用方只能等 8s 超时拿到 opened=false，看不到真实原因。
+                // 现在解析 response（如果有）和 throwable，分类成可读的 ConnectResult。
                 isOpen = false
                 failAll(t)
+                result = classifyFailure(t, response)
+                latch.countDown()
             }
         })
+        // 8s 内等 onOpen 或 onFailure 触发；超时则 result 保持 Timeout
         latch.await(8, TimeUnit.SECONDS)
-        return opened
+        return result
+    }
+
+    /** 把 onFailure 的 throwable + response 分类成 [ConnectResult]。 */
+    private fun classifyFailure(t: Throwable, response: Response?): ConnectResult {
+        // 1) cleartext 被拦：消息含 CLEARTEXT / network security policy
+        var cur: Throwable? = t
+        repeat(5) {
+            if (cur == null) return@repeat
+            val msg = cur!!.message ?: cur!!.javaClass.simpleName
+            if (msg.contains("CLEARTEXT", ignoreCase = true) ||
+                msg.contains("not permitted by network security policy", ignoreCase = true)
+            ) return CleartextBlocked
+            cur = cur!!.cause
+        }
+        // 2) HTTP 非 101：OkHttp 在握手响应非 101 时会 onFailure，
+        //    response 携带真实状态码和 body（Chrome 401/403/404 会走这里）
+        if (response != null) {
+            val code = response.code
+            val body = runCatching { response.body?.string() }.getOrNull()
+            return ConnectResult.HttpRejected(code, body)
+        }
+        // 3) 其他异常（连接 reset / timeout / IOException）
+        return ConnectResult.Error(t)
     }
 
     private fun handleText(text: String) {

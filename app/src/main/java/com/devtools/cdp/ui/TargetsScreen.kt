@@ -53,9 +53,11 @@ fun TargetsScreen(viewModel: CdpViewModel, state: UiState) {
         // ---- 0. 连接向导卡（参考 JD phoneDebug 流程） ----
         item { ConnectionGuide(state) }
 
-        // ---- 0b. 诊断卡：桥接已运行但拿不到 /json/version ----
-        // 只在 BRIDGE_RUNNING 且 version 仍为空时显示，给用户具体错误 + 可操作建议
-        if (state.bridgeState == BridgeState.BRIDGE_RUNNING && state.version == null) {
+        // ---- 0b. 诊断卡：桥接已运行但有问题（无 version / WS 连接失败） ----
+        // 触发条件：BRIDGE_RUNNING 且（version 为空 或 有 discoveryError 且未连 CDP）
+        // 覆盖两种场景：1) /json/version 拿不到；2) version 有但点 Inspect 时 WS 失败
+        if (state.bridgeState == BridgeState.BRIDGE_RUNNING &&
+            (state.version == null || (state.discoveryError != null && !state.cdpConnected))) {
             item { DiagnosticsCard(state, viewModel) }
         }
 
@@ -234,7 +236,10 @@ private fun TypeBadge(type: String) {
  */
 @Composable
 private fun DiagnosticsCard(state: UiState, viewModel: CdpViewModel) {
-    // 探测结论
+    // 区分两种诊断场景：发现阶段失败（无 version）vs Inspect 阶段 WS 失败（有 version 但连接失败）
+    val isWsError = state.version != null && state.discoveryError != null
+
+    // 探测结论（仅在发现阶段有意义）
     val probeLine = when (state.probeOk) {
         null -> "abstract socket 未探测"
         true -> "abstract socket 可连 ✓（Chrome 在监听 @$${state.selectedAbstract ?: "?"}）"
@@ -243,9 +248,15 @@ private fun DiagnosticsCard(state: UiState, viewModel: CdpViewModel) {
     // 错误详情
     val errLine = state.discoveryError ?: "等待 /json/version 响应…（已启动自动重试）"
 
-    // 根据探测+错误组合给最可能的建议
+    // 根据场景给最可能的建议
     val suggestions = buildList {
-        if (state.probeOk == false) {
+        if (isWsError) {
+            // WebSocket Inspect 失败的专属建议
+            add("保持目标页面前台打开，不要锁屏/切走/刷新 —— target id 失效会导致 401/404")
+            add("点下方「重试探测」重新拉最新 target 列表，再点 Inspect")
+            add("WebView 的 CDP WS 偶有不稳定，退出 CDP Bridge 重进后重新启动桥接")
+            add("若错误含 403/Cleartext：检查 App 是否已更新到 v1.5+（networkSecurityConfig 已放开）")
+        } else if (state.probeOk == false) {
             add("Chrome/WebView 进程未运行或已退出 —— 打开官方 Chrome 访问 https://example.com 后回此页")
             add("选错了 socket —— 回到 Remote sockets 区换一个（如 webview_devtools_remote_*）")
         } else {
@@ -253,8 +264,10 @@ private fun DiagnosticsCard(state: UiState, viewModel: CdpViewModel) {
             add("若是 WebView：目标 App 必须调用 WebView.setWebContentsDebugging(true) 才能被 CDP 发现")
             add("部分定制 ROM 的 Chrome 关闭了远程调试，换用 Chrome Beta / 系统 WebView 测试")
         }
-        add("CDP 接口虽被桥接，但当前无调试目标 —— 这是 Chrome 侧决定，桥接本身正常")
     }
+
+    val title = if (isWsError) "诊断：CDP WebSocket Inspect 失败"
+                else "诊断：桥接已起但无 CDP 响应"
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -264,19 +277,21 @@ private fun DiagnosticsCard(state: UiState, viewModel: CdpViewModel) {
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Text(
-                "诊断：桥接已起但无 CDP 响应",
+                title,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onErrorContainer,
                 style = MaterialTheme.typography.labelMedium
             )
             Spacer(Modifier.height(6.dp))
-            // 探测行
-            Text(
-                probeLine,
-                style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
-                color = MaterialTheme.colorScheme.onErrorContainer
-            )
+            // 探测行（仅发现阶段失败时显示，WS 阶段已确认 socket 正常）
+            if (!isWsError) {
+                Text(
+                    probeLine,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onErrorContainer
+                )
+            }
             // 错误行
             Text(
                 errLine,
