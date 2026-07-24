@@ -248,29 +248,21 @@ class CdpBridgeService : ICdpBridge.Stub() {
             }
 
             // 3. 读 /proc/<pid>/cmdline 拿进程名/包名
-            val pm = android.app.AppGlobals.getPackageManager()
+            // UserService 是 shell UID，无法直接拿 PackageManager；
+            // 应用标签(label)由 UI 侧主进程用 PackageManager 反查，这里只回传包名。
             nameToInode.forEach { (sockName, inode) ->
                 val pid = inodeToPid[inode] ?: -1
                 var procName = ""
-                var pkgName = ""
-                var appLabel = ""
                 if (pid > 0) {
                     try {
                         File("/proc/$pid/cmdline").useLines { ls ->
                             procName = ls.firstOrNull()?.trim('\u0000', ' ') ?: ""
                         }
                     } catch (_: Throwable) {}
-                    // cmdline 对 Chrome 是 "com.android.chrome" 或 "com.android.chrome:sandbox"
-                    pkgName = procName.substringBefore(':')
-                    // 反查应用标签（UserService 是 shell UID，getPackageInfo 可能受限，try/catch）
-                    try {
-                        val info = pm?.getPackageInfo(pkgName, 0)
-                        if (info != null) {
-                            appLabel = pm.getApplicationLabel(info.applicationInfo).toString()
-                        }
-                    } catch (_: Throwable) {}
                 }
-                out.add("$sockName\t$procName\t$pkgName\t$appLabel")
+                // cmdline 对 Chrome 是 "com.android.chrome" 或 "com.android.chrome:sandbox"
+                val pkgName = procName.substringBefore(':')
+                out.add("$sockName\t$procName\t$pkgName")
             }
         } catch (e: Throwable) {
             Log.e(TAG, "listTargetsWithInfo failed: ${e.message}")

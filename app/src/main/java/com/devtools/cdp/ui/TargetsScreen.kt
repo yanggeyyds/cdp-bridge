@@ -27,6 +27,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -119,8 +123,8 @@ fun TargetsScreen(viewModel: CdpViewModel, state: UiState) {
                         ) { Text("重载") }
                     }
                     // 便捷操作：页面信息 / 清缓存 / 禁用缓存
-                    var cacheDisabled by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
-                    var pageInfo by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<String?>(null) }
+                    var cacheDisabled by remember { mutableStateOf(false) }
+                    var pageInfo by remember { mutableStateOf<String?>(null) }
                     Row(
                         modifier = Modifier.padding(top = 6.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -141,9 +145,9 @@ fun TargetsScreen(viewModel: CdpViewModel, state: UiState) {
                             }
                         ) { Text(if (cacheDisabled) "启用缓存" else "禁用缓存") }
                     }
-                    pageInfo?.let {
+                    pageInfo?.let { info ->
                         Spacer(Modifier.height(6.dp))
-                        Text(it, style = MaterialTheme.typography.bodySmall,
+                        Text(info, style = MaterialTheme.typography.bodySmall,
                             fontFamily = FontFamily.Monospace,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(2.dp))
@@ -202,6 +206,15 @@ private fun HintText(text: String) {
 @Composable
 private fun RemoteSocketCard(tgt: AbstractTarget, state: UiState, viewModel: CdpViewModel) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    // UI 侧用 PackageManager 反查应用名（UserService 进程拿不到 PM）
+    val appLabel = remember(tgt.packageName) {
+        if (tgt.packageName.isBlank()) ""
+        else runCatching {
+            val pm = context.packageManager
+            val info = pm.getPackageInfo(tgt.packageName, 0)
+            pm.getApplicationLabel(info.applicationInfo).toString()
+        }.getOrDefault("")
+    }
     val isActive = tgt.socketName == state.selectedAbstract && state.bridgeState == BridgeState.BRIDGE_RUNNING
     Card(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -217,12 +230,12 @@ private fun RemoteSocketCard(tgt: AbstractTarget, state: UiState, viewModel: Cdp
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                // 应用名（大字），没有则显示 socket 名
-                Text(tgt.displayName(),
+                // 应用名（大字），没有则显示包名，再没有则显示 socket 名
+                Text(appLabel.ifBlank { tgt.packageName.ifBlank { tgt.socketName } },
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium)
-                // 包名 / 进程名（如果有）
-                if (tgt.packageName.isNotBlank() && tgt.packageName != tgt.appLabel) {
+                // 包名（与应用名不同时显示）
+                if (tgt.packageName.isNotBlank() && tgt.packageName != appLabel) {
                     Text(tgt.packageName,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

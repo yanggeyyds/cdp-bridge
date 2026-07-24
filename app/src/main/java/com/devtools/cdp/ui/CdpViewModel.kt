@@ -250,20 +250,20 @@ class CdpViewModel : ViewModel() {
         }
     }
 
-    /** 刷新带应用信息的 target 列表（abstract socket + 所属进程/包名/应用名）。 */
+    /** 刷新带应用信息的 target 列表（abstract socket + 所属进程/包名）。应用名由 UI 侧查。 */
     fun refreshAbstractTargetsDetailed() {
         val b = bridge ?: return
         viewModelScope.launch(Dispatchers.IO) {
             val infos = runCatching { b.listTargetsWithInfo() }.getOrDefault(emptyList())
-            // 解析 "sock\tproc\tpkg\tlabel"，label 可能为空
+            // 解析 "sock\tproc\tpkg"，label 由 UI 侧 PackageManager 反查
             val models = infos.mapNotNull { line ->
                 val p = line.split("\t")
-                if (p.size < 4) return@mapNotNull null
+                if (p.size < 3) return@mapNotNull null
                 AbstractTarget(
                     socketName = p[0],
                     processName = p[1],
                     packageName = p[2],
-                    appLabel = p[3]
+                    appLabel = ""
                 )
             }
             // 兼容：如果新版方法无响应，回退到旧 listTargets 仅显示 socket 名
