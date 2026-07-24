@@ -138,7 +138,7 @@ class CdpClient(
             val msg = cur!!.message ?: cur!!.javaClass.simpleName
             if (msg.contains("CLEARTEXT", ignoreCase = true) ||
                 msg.contains("not permitted by network security policy", ignoreCase = true)
-            ) return CleartextBlocked
+            ) return ConnectResult.CleartextBlocked
             cur = cur!!.cause
         }
         // 2) HTTP 非 101：OkHttp 在握手响应非 101 时会 onFailure，
