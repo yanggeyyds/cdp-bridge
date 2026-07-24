@@ -40,7 +40,8 @@ import androidx.compose.ui.unit.dp
 import com.devtools.cdp.BuildConfig
 
 private enum class CdpTab(val title: String) {
-    TARGETS("Targets"), CONSOLE("Console"), ELEMENTS("Elements"), NETWORK("Network")
+    TARGETS("Targets"), CONSOLE("Console"), ELEMENTS("Elements"),
+    NETWORK("Network"), SOURCES("Sources")
 }
 
 /**
@@ -132,6 +133,7 @@ fun AppRoot(viewModel: CdpViewModel) {
                 CdpTab.CONSOLE -> ConsoleScreen(viewModel, state)
                 CdpTab.ELEMENTS -> ElementsScreen(viewModel, state)
                 CdpTab.NETWORK -> NetworkScreen(viewModel, state)
+                CdpTab.SOURCES -> SourcesScreen(viewModel, state)
             }
         }
     }

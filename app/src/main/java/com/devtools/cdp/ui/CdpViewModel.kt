@@ -54,13 +54,31 @@ data class UiState(
     /** abstract socket 探测结果：null=未探测；true=可连；false=连不上。 */
     val probeOk: Boolean? = null,
     /** /json/version 失败时的具体原因（人类可读），用于诊断卡展示。null=未失败或未尝试。 */
-    val discoveryError: String? = null
+    val discoveryError: String? = null,
+    // —— Sources ——
+    val sourcesEnabled: Boolean = false,
+    val scripts: List<ScriptInfo> = emptyList(),
+    val scriptSources: Map<String, String> = emptyMap()
 ) {
     companion object {
         const val MAX_CONSOLE = 500
         const val MAX_NETWORK = 300
+        const val MAX_SCRIPTS = 500
     }
 }
+
+/** JS 脚本信息（来自 Debugger.scriptParsed 事件）。 */
+data class ScriptInfo(
+    val scriptId: String,
+    val url: String = "",
+    val startLine: Int = 0,
+    val startColumn: Int = 0,
+    val endLine: Int = 0,
+    val endColumn: Int = 0,
+    val executionContextId: Int = 0,
+    val hash: String = "",
+    val isContentScript: Boolean = false
+)
 
 /**
  * CdpViewModel：MVVM 中枢。
@@ -327,7 +345,8 @@ class CdpViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             stopCdpInternal()
             update { it.copy(cdpConnected = false, domRoot = null,
-                console = emptyList(), exceptions = emptyList(), network = emptyList()) }
+                console = emptyList(), exceptions = emptyList(), network = emptyList(),
+                scripts = emptyList(), scriptSources = emptyMap(), sourcesEnabled = false) }
         }
     }
 
@@ -424,6 +443,132 @@ class CdpViewModel : ViewModel() {
         }
     }
 
+    // ---------- Network：拉响应体 ----------
+
+    /** 拉取某请求的响应体（Network.getResponseBody）。 */
+    fun fetchNetworkBody(req: NetworkRequest) {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val params = JsonObject().apply { addProperty("requestId", req.requestId) }
+            val res = runCatching { c.send("Network.getResponseBody", params) }.getOrNull()
+            val body = res?.get("body")?.asString
+            val b64 = res?.get("base64Encoded")?.asBoolean ?: false
+            upsertNetwork(req.requestId) {
+                it.body = body ?: ""
+                it.bodyBase64Encoded = b64
+                it.bodyFetched = true
+            }
+        }
+    }
+
+    // ---------- Elements：DOM 编辑 ----------
+
+    /** 设置元素属性（DOM.setAttributeValue）。 */
+    fun setAttribute(nodeId: Int, name: String, value: String) {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val params = JsonObject().apply {
+                addProperty("nodeId", nodeId)
+                addProperty("name", name)
+                addProperty("value", value)
+            }
+            runCatching { c.send("DOM.setAttributeValue", params) }
+            refreshDom()
+        }
+    }
+
+    /** 删除元素属性（DOM.removeAttribute）。 */
+    fun removeAttribute(nodeId: Int, name: String) {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val params = JsonObject().apply {
+                addProperty("nodeId", nodeId)
+                addProperty("name", name)
+            }
+            runCatching { c.send("DOM.removeAttribute", params) }
+            refreshDom()
+        }
+    }
+
+    /** 替换整个元素 HTML（DOM.setOuterHTML）—— 用于改标签结构。 */
+    fun setOuterHTML(nodeId: Int, html: String) {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val params = JsonObject().apply {
+                addProperty("nodeId", nodeId)
+                addProperty("outerHTML", html)
+            }
+            runCatching { c.send("DOM.setOuterHTML", params) }
+            refreshDom()
+        }
+    }
+
+    /** 设置节点文本内容（DOM.setNodeValue）—— 用于改文本节点。 */
+    fun setNodeValue(nodeId: Int, value: String) {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val params = JsonObject().apply {
+                addProperty("nodeId", nodeId)
+                addProperty("value", value)
+            }
+            runCatching { c.send("DOM.setNodeValue", params) }
+            refreshDom()
+        }
+    }
+
+    /** 设置元素 innerHTML（DOM.setNodeValue 不支持 HTML，用 Runtime.evaluate 注入）。 */
+    fun setInnerHTML(nodeId: Int, html: String) {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            // 解析 nodeId → RemoteObject 再设 innerHTML
+            val resolveParams = JsonObject().apply { addProperty("nodeId", nodeId) }
+            val resolved = runCatching { c.send("DOM.resolveNode", resolveParams) }.getOrNull()
+            val objectGroup = resolved?.getAsJsonObject("object")?.get("objectId")?.asString
+            if (objectGroup != null) {
+                val evalParams = JsonObject().apply {
+                    addProperty("functionDeclaration",
+                        "function(html){ this.innerHTML = html; }")
+                    addProperty("objectId", objectGroup)
+                    val args = com.google.gson.JsonArray().apply {
+                        add(JsonObject().apply { addProperty("value", html) })
+                    }
+                    add("arguments", args)
+                    addProperty("returnByValue", true)
+                }
+                runCatching { c.send("Runtime.callFunctionOn", evalParams) }
+                runCatching {
+                    val relParams = JsonObject().apply { addProperty("objectId", objectGroup) }
+                    c.send("Runtime.releaseObject", relParams)
+                }
+                refreshDom()
+            }
+        }
+    }
+
+    // ---------- Sources：脚本源码 ----------
+
+    /** 启用 Debugger 域并触发 scriptParsed 事件收集脚本列表。 */
+    fun enableSources() {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { c.send("Debugger.enable") }
+            update { it.copy(sourcesEnabled = true) }
+        }
+    }
+
+    /** 拉取某脚本的源码（Debugger.getScriptSource）。 */
+    fun fetchScriptSource(scriptId: String) {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val params = JsonObject().apply { addProperty("scriptId", scriptId) }
+            val res = runCatching { c.send("Debugger.getScriptSource", params) }.getOrNull()
+            val src = res?.get("scriptSource")?.asString ?: "(无源码)"
+            update { st ->
+                st.copy(scriptSources = st.scriptSources + (scriptId to src))
+            }
+        }
+    }
+
     // ---------- 事件分发 ----------
 
     /** 把 CDP stackTrace.callFrames 格式化成可读调用栈（每帧一行）。 */
@@ -482,6 +627,11 @@ class CdpViewModel : ViewModel() {
                     it.url = req?.get("url")?.asString ?: ""
                     it.method = req?.get("method")?.asString ?: ""
                     it.type = ev.params.get("type")?.asString ?: ""
+                    // 请求头（CDP 在 request.headers 里给扁平 map）
+                    it.requestHeaders = req?.getAsJsonObject("headers")?.entrySet()
+                        ?.associate { e -> e.key to (e.value?.asString ?: "") } ?: emptyMap()
+                    it.postData = req?.get("postData")?.takeIf { !it.isJsonNull }?.asString
+                    it.hasPostData = req?.get("hasPostData")?.asBoolean ?: (it.postData != null)
                 }
             }
             "Network.responseReceived" -> {
@@ -489,18 +639,49 @@ class CdpViewModel : ViewModel() {
                 val resp = ev.params.getAsJsonObject("response")
                 upsertNetwork(rid) {
                     it.status = resp?.get("status")?.asInt ?: 0
+                    it.statusText = resp?.get("statusText")?.asString ?: ""
                     it.mimeType = resp?.get("mimeType")?.asString ?: ""
+                    it.responseHeaders = resp?.getAsJsonObject("headers")?.entrySet()
+                        ?.associate { e -> e.key to (e.value?.asString ?: "") } ?: emptyMap()
+                    it.remoteIP = resp?.get("remoteIPAddress")?.asString ?: ""
+                    it.remotePort = resp?.get("remotePort")?.asInt ?: 0
+                    it.protocol = resp?.get("protocol")?.asString ?: ""
+                    // timing 嵌套对象
+                    it.timing = resp?.getAsJsonObject("timing")?.entrySet()
+                        ?.associate { e -> e.key to (e.value?.asDouble ?: 0.0) } ?: emptyMap()
                 }
             }
             "Network.loadingFinished" -> {
                 val rid = ev.params.get("requestId")?.asString ?: return
-                upsertNetwork(rid) { it.finished = true }
+                upsertNetwork(rid) {
+                    it.finished = true
+                    it.encodedDataLength = ev.params.get("encodedDataLength")?.asLong ?: 0
+                }
             }
             "Network.loadingFailed" -> {
                 val rid = ev.params.get("requestId")?.asString ?: return
                 upsertNetwork(rid) {
                     it.failed = true
                     it.errorText = ev.params.get("errorText")?.asString
+                }
+            }
+            "Debugger.scriptParsed" -> {
+                // 收集 JS 脚本信息，供 Sources 页查看
+                val sid = ev.params.get("scriptId")?.asString ?: return
+                val script = ScriptInfo(
+                    scriptId = sid,
+                    url = ev.params.get("url")?.asString ?: "",
+                    startLine = ev.params.get("startLine")?.asInt ?: 0,
+                    startColumn = ev.params.get("startColumn")?.asInt ?: 0,
+                    endLine = ev.params.get("endLine")?.asInt ?: 0,
+                    endColumn = ev.params.get("endColumn")?.asInt ?: 0,
+                    executionContextId = ev.params.get("executionContextId")?.asInt ?: 0,
+                    hash = ev.params.get("hash")?.asString ?: "",
+                    isContentScript = ev.params.get("isContentScript")?.asBoolean ?: false
+                )
+                update { st ->
+                    val list = (st.scripts + script).takeLast(UiState.MAX_SCRIPTS)
+                    st.copy(scripts = list)
                 }
             }
         }

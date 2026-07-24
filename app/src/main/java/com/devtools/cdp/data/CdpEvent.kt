@@ -46,10 +46,27 @@ data class NetworkRequest(
     var url: String = "",
     var method: String = "",
     var status: Int = 0,
+    var statusText: String = "",
     var mimeType: String = "",
     var type: String = "",
     var finished: Boolean = false,
     var failed: Boolean = false,
     var errorText: String? = null,
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    // —— 请求详情 ——
+    var requestHeaders: Map<String, String> = emptyMap(),
+    var postData: String? = null,
+    var hasPostData: Boolean = false,
+    // —— 响应详情 ——
+    var responseHeaders: Map<String, String> = emptyMap(),
+    var remoteIP: String = "",
+    var remotePort: Int = 0,
+    var protocol: String = "",
+    var encodedDataLength: Long = 0,
+    // —— timing ——
+    var timing: Map<String, Double> = emptyMap(),
+    // —— 拉取的响应体（getResponseBody）——
+    var body: String? = null,
+    var bodyBase64Encoded: Boolean = false,
+    var bodyFetched: Boolean = false
 )
