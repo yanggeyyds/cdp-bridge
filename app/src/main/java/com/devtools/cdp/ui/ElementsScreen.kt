@@ -1,37 +1,53 @@
 package com.devtools.cdp.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.devtools.cdp.data.DomNode
 
 /**
- * Elements 页：DOM.getDocument 递归成树，缩进显示，点击 DOM.highlightNode。
+ * Elements 页：DOM 树展开/折叠 + 标签着色 + 点击高亮。
  *
- * 注意：@Composable 内禁止用 early return（return@Column）来跳过后续 emit，
- * 否则条件翻转时 Composer 的 group 栈与 slot table 结构不一致，会触发
- * Stack.pop IndexOutOfBoundsException（exitGroup/endRoot 阶段崩溃）。
- * 这里用 if/else 分支保证每次 recomposition 的 group 结构稳定。
+ * 用 mutableStateMapOf<Int,Boolean> 记录每个 nodeId 是否展开，
+ * 默认只展开根节点，点击 chevron 切换子树可见性。
  */
 @Composable
 fun ElementsScreen(viewModel: CdpViewModel, state: UiState) {
+    val expanded = remember { mutableStateMapOf<Int, Boolean>() }
+
     Column(modifier = Modifier.fillMaxSize().padding(8.dp)) {
         if (!state.cdpConnected) {
             Text(
                 "请先在 Targets 页连接一个 page target。",
                 style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(8.dp)
             )
         } else {
@@ -44,26 +60,22 @@ fun ElementsScreen(viewModel: CdpViewModel, state: UiState) {
             if (root == null) {
                 Text(
                     "(未获取 DOM 树，点上方按钮拉取)",
-                    style = MaterialTheme.typography.bodySmall
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
-                LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    val flat = flatten(root, depth = 0)
-                    // 用 nodeId 作 key，保证 recomposition 时列表项身份稳定
-                    items(flat, key = { it.second.nodeId }) { (depth, node) ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(start = (depth * 12).dp, top = 2.dp, bottom = 2.dp)
-                        ) {
-                            Text(
-                                text = renderNode(node),
-                                fontFamily = FontFamily.Monospace,
-                                style = MaterialTheme.typography.bodySmall,
-                                // 每行各自 clickable（默认 indication），避免共享 interactionSource
-                                modifier = Modifier.clickable { viewModel.highlightNode(node.nodeId) }
-                            )
-                        }
+                // 根节点默认展开
+                val flat = remember(root, expanded.toMap()) {
+                    buildFlatList(root, 0, expanded).apply {
+                        if (size > 200) subList(0, 200)
+                    }
+                }
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(1.dp)
+                ) {
+                    items(flat, key = { it.node.nodeId }) { item ->
+                        NodeRow(item, expanded, onClick = { viewModel.highlightNode(item.node.nodeId) })
                     }
                 }
             }
@@ -71,24 +83,89 @@ fun ElementsScreen(viewModel: CdpViewModel, state: UiState) {
     }
 }
 
-/** 递归扁平化为 (depth, node) 列表（限制 500 个避免爆栈）。 */
-private fun flatten(node: DomNode, depth: Int, out: MutableList<Pair<Int, DomNode>> = mutableListOf()): MutableList<Pair<Int, DomNode>> {
-    if (out.size >= 500) return out
-    out.add(depth to node)
-    node.children?.forEach { flatten(it, depth + 1, out) }
+@Composable
+private fun NodeRow(
+    item: FlatNode,
+    expanded: androidx.compose.runtime.snapshots.SnapshotStateMap<Int, Boolean>,
+    onClick: () -> Unit
+) {
+    val node = item.node
+    val hasChildren = !node.children.isNullOrEmpty()
+    val isOpen = expanded[node.nodeId] ?: false
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = (item.depth * 12).dp, vertical = 1.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (hasChildren) {
+            Icon(
+                imageVector = if (isOpen) Icons.Filled.ExpandMore else Icons.Filled.ChevronRight,
+                contentDescription = if (isOpen) "折叠" else "展开",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .padding(end = 2.dp)
+                    .size(16.dp)
+                    .clickable { expanded[node.nodeId] = !isOpen }
+            )
+        } else {
+            Spacer(Modifier.size(18.dp))
+        }
+        Text(
+            text = renderNodeAnnotated(node),
+            fontFamily = FontFamily.Monospace,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.clickable(onClick = onClick)
+        )
+    }
+}
+
+/** 递归构建可见节点列表（只遍历已展开的子树，根默认展开）。 */
+private fun buildFlatList(
+    node: DomNode,
+    depth: Int,
+    expanded: Map<Int, Boolean>,
+    out: MutableList<FlatNode> = mutableListOf()
+): MutableList<FlatNode> {
+    out.add(FlatNode(node, depth))
+    val isOpen = expanded[node.nodeId] ?: (depth == 0)
+    if (isOpen && !node.children.isNullOrEmpty()) {
+        node.children!!.forEach { buildFlatList(it, depth + 1, expanded, out) }
+    }
     return out
 }
 
-private fun renderNode(node: DomNode): String {
-    return if (node.isElement()) {
-        val attrs = node.attributePairs().joinToString(" ") { (k, v) -> "$k=\"$v\"" }
-        val prefix = if (attrs.isEmpty()) "" else " $attrs"
-        "<${node.localName}$prefix>"
-    } else if (node.nodeType == 3) { // text
-        "\"${(node.nodeValue ?: "").trim().take(80)}\""
-    } else if (node.nodeType == 8) { // comment
-        "<!-- ${node.nodeValue?.take(80)} -->"
-    } else {
-        node.nodeName
+private data class FlatNode(val node: DomNode, val depth: Int)
+
+/** 带着色的节点渲染：标签名蓝、属性名橙、文本灰。 */
+private fun renderNodeAnnotated(node: DomNode): AnnotatedString {
+    val tagColor = SpanStyle(color = Color(0xFF8AB4F8))
+    val attrNameColor = SpanStyle(color = Color(0xFFF9AB6B))
+    val attrValColor = SpanStyle(color = Color(0xFF81C995))
+    val textColor = SpanStyle(color = Color(0xFF9AA0A6))
+
+    return buildAnnotatedString {
+        when {
+            node.isElement() -> {
+                append("<")
+                withStyle(tagColor) { append(node.localName) }
+                node.attributePairs().forEach { (k, v) ->
+                    append(" ")
+                    withStyle(attrNameColor) { append(k) }
+                    append("=\"")
+                    withStyle(attrValColor) { append(v) }
+                    append("\"")
+                }
+                append(">")
+            }
+            node.nodeType == 3 -> withStyle(textColor) {
+                append("\"${(node.nodeValue ?: "").trim().take(80)}\"")
+            }
+            node.nodeType == 8 -> withStyle(textColor) {
+                append("<!-- ${node.nodeValue?.take(80)} -->")
+            }
+            else -> append(node.nodeName)
+        }
     }
 }

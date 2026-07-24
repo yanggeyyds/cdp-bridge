@@ -9,6 +9,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import rikka.shizuku.Shizuku
 import com.devtools.cdp.ui.AppRoot
+import com.devtools.cdp.ui.CdpTheme
 import com.devtools.cdp.ui.CdpViewModel
 
 /**
@@ -101,7 +102,9 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            AppRoot(viewModel = viewModel)
+            CdpTheme {
+                AppRoot(viewModel = viewModel)
+            }
         }
     }
 

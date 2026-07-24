@@ -336,6 +336,11 @@ class CdpViewModel : ViewModel() {
         }
     }
 
+    /** 清空 Console 与异常列表。 */
+    fun clearConsole() {
+        update { it.copy(console = emptyList(), exceptions = emptyList()) }
+    }
+
     private fun pushException(e: ExceptionEntry) {
         update { st ->
             val list = (st.exceptions + e).takeLast(UiState.MAX_CONSOLE)
@@ -358,6 +363,11 @@ class CdpViewModel : ViewModel() {
             }
             st.copy(network = list.takeLast(UiState.MAX_NETWORK))
         }
+    }
+
+    /** 清空 Network 请求列表。 */
+    fun clearNetwork() {
+        update { it.copy(network = emptyList()) }
     }
 
     private fun update(block: (UiState) -> UiState) {
