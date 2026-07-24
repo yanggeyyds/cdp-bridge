@@ -3,6 +3,7 @@ package com.devtools.cdp.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -24,12 +25,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -39,6 +44,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -106,6 +112,9 @@ fun ConsoleScreen(viewModel: CdpViewModel, state: UiState) {
     var expr by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf(ConsoleFilter.ALL) }
     var search by remember { mutableStateOf("") }
+    var autoScroll by remember { mutableStateOf(true) }
+    var showAbsoluteTime by remember { mutableStateOf(false) }
+    var showClearDialog by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -121,8 +130,7 @@ fun ConsoleScreen(viewModel: CdpViewModel, state: UiState) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(8.dp)
             )
-            return@Column
-        }
+        } else {
 
         // ---------- 输入栏 + 命令历史 ----------
         Row(
@@ -162,7 +170,13 @@ fun ConsoleScreen(viewModel: CdpViewModel, state: UiState) {
             leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) }
         )
 
-        // ---------- 级别过滤 chip + 计数 + 清空 ----------
+        // ---------- 消息列表数据 ----------
+        val timeFmt = remember { SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()) }
+        val rows = remember(state.console, state.exceptions, filter, search, showAbsoluteTime) {
+            buildRows(state, filter, search, timeFmt, showAbsoluteTime)
+        }
+
+        // ---------- 级别过滤 chip + 计数 + 工具按钮 ----------
         Row(
             modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -174,8 +188,10 @@ fun ConsoleScreen(viewModel: CdpViewModel, state: UiState) {
                     ConsoleFilter.ALL -> state.console.size + state.exceptions.size
                     ConsoleFilter.ERROR -> counts["error"] ?: 0
                     ConsoleFilter.WARN -> counts["warning"] ?: 0
-                    ConsoleFilter.INFO -> counts["info"] ?: 0
-                    ConsoleFilter.VERBOSE -> counts["verbose"] ?: 0
+                    ConsoleFilter.INFO -> (counts["log"] ?: 0) + (counts["info"] ?: 0) +
+                        (counts["startGroup"] ?: 0) + (counts["endGroup"] ?: 0)
+                    ConsoleFilter.VERBOSE -> (counts["debug"] ?: 0) + (counts["verbose"] ?: 0) +
+                        (counts["trace"] ?: 0)
                 }
                 FilterChip(
                     selected = filter == f,
@@ -184,15 +200,45 @@ fun ConsoleScreen(viewModel: CdpViewModel, state: UiState) {
                 )
             }
             Spacer(Modifier.weight(1f))
-            IconButton(onClick = { viewModel.clearConsole() }) {
+            IconButton(onClick = {
+                val text = rows.joinToString("\n") { row -> "[${row.level}] ${row.copyText()}" }
+                copyToClipboard(context, text)
+            }) {
+                Icon(Icons.Filled.ContentCopy, contentDescription = "复制全部日志")
+            }
+            IconButton(onClick = { autoScroll = !autoScroll }) {
+                Icon(Icons.Filled.ArrowDropDown, contentDescription = "自动滚动",
+                    tint = if (autoScroll) MaterialTheme.colorScheme.primary
+                           else MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            IconButton(onClick = { showAbsoluteTime = !showAbsoluteTime }) {
+                Icon(Icons.Filled.Schedule, contentDescription = "时间格式",
+                    tint = if (showAbsoluteTime) MaterialTheme.colorScheme.primary
+                           else MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            IconButton(onClick = { showClearDialog = true }) {
                 Icon(Icons.Filled.Delete, contentDescription = "清空")
             }
         }
 
-        // ---------- 消息列表 ----------
-        val timeFmt = remember { SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()) }
-        val rows = remember(state.console, state.exceptions, filter, search) {
-            buildRows(state, filter, search, timeFmt)
+        // ---------- 级别摘要 ----------
+        val summaryCounts = remember(state.console, state.exceptions) { countByLevel(state) }
+        Card(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            )
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                SummaryBadge("Errors", summaryCounts["error"] ?: 0, Color(0xFFEA4335))
+                SummaryBadge("Warnings", summaryCounts["warning"] ?: 0, Color(0xFFFBBC04))
+                SummaryBadge("Info", summaryCounts["info"] ?: 0, Color(0xFF4285F4))
+                SummaryBadge("Log", summaryCounts["log"] ?: 0, Color(0xFF80868B))
+            }
         }
 
         // 智能滚动：用户在底部时跟随，上滑时停止
@@ -202,9 +248,9 @@ fun ConsoleScreen(viewModel: CdpViewModel, state: UiState) {
                 last >= rows.size - 2
             }
         }
-        // 监听新条目：仅当已停在底部时自动滚动
+        // 监听新条目：开启自动滚动时跟随到底部
         LaunchedEffect(rows.size) {
-            if (rows.isNotEmpty() && isAtBottom) {
+            if (rows.isNotEmpty() && autoScroll) {
                 listState.animateScrollToItem(rows.size - 1)
             }
         }
@@ -238,6 +284,24 @@ fun ConsoleScreen(viewModel: CdpViewModel, state: UiState) {
                 }
             }
         }
+
+        if (showClearDialog) {
+            AlertDialog(
+                onDismissRequest = { showClearDialog = false },
+                title = { Text("确认清空", style = MaterialTheme.typography.titleMedium) },
+                text = { Text("确认清空所有 Console 消息？") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        viewModel.clearConsole()
+                        showClearDialog = false
+                    }) { Text("确认") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showClearDialog = false }) { Text("取消") }
+                }
+            )
+        }
+        }
     }
 }
 
@@ -252,6 +316,7 @@ private fun ConsoleMessageRow(
 ) {
     val isExpanded = expanded[row.id] ?: false
     val levelColor = row.levelColor()
+    val context = LocalContext.current
 
     Card(
         modifier = Modifier
@@ -261,7 +326,10 @@ private fun ConsoleMessageRow(
                     // 有可展开内容时点击切换展开
                     if (row.expandable) onToggle()
                 },
-                onLongClick = { onCopy(row.copyText()) }
+                onLongClick = {
+                    onCopy(row.copyText())
+                    Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+                }
             ),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
@@ -514,13 +582,14 @@ private fun buildRows(
     state: UiState,
     filter: ConsoleFilter,
     search: String,
-    timeFmt: SimpleDateFormat
+    timeFmt: SimpleDateFormat,
+    showAbsoluteTime: Boolean
 ): List<ConsoleRow> {
     val q = search.trim()
     val rows = ArrayList<ConsoleRow>()
     if (filter == ConsoleFilter.ALL || filter == ConsoleFilter.ERROR) {
         state.exceptions.forEach { e ->
-            val time = timeFmt.format(Date(e.timestamp))
+            val time = if (showAbsoluteTime) timeFmt.format(Date(e.timestamp)) else formatRelativeTime(e.timestamp)
             val row = ConsoleRow.Exception(id = "exc-${e.timestamp}", time = time, entry = e)
             if (q.isBlank() || row.copyText().contains(q, ignoreCase = true)) rows.add(row)
         }
@@ -528,7 +597,7 @@ private fun buildRows(
     state.console.forEach { e ->
         val match = filter == ConsoleFilter.ALL || e.level in filter.matchLevels
         if (!match) return@forEach
-        val time = timeFmt.format(Date(e.timestamp))
+        val time = if (showAbsoluteTime) timeFmt.format(Date(e.timestamp)) else formatRelativeTime(e.timestamp)
         val row = ConsoleRow.Log(id = "log-${e.timestamp}-${e.hashCode()}", time = time, entry = e)
         if (q.isBlank() || row.copyText().contains(q, ignoreCase = true) ||
             (e.url?.contains(q, ignoreCase = true) == true)) {
@@ -539,9 +608,30 @@ private fun buildRows(
     return rows.sortedBy { extractTime(it) }
 }
 
+/** 相对时间格式化：如 "3s ago"。 */
+private fun formatRelativeTime(ts: Long): String {
+    val diff = System.currentTimeMillis() - ts
+    return when {
+        diff < 1000 -> "now"
+        diff < 60_000 -> "${diff / 1000}s ago"
+        diff < 3_600_000 -> "${diff / 60_000}m ago"
+        diff < 86_400_000 -> "${diff / 3_600_000}h ago"
+        else -> "${diff / 86_400_000}d ago"
+    }
+}
+
 private fun extractTime(row: ConsoleRow): Long = when (row) {
     is ConsoleRow.Log -> row.entry.timestamp
     is ConsoleRow.Exception -> row.entry.timestamp
+}
+
+/** 级别摘要小徽章：色点 + 标签 + 计数。 */
+@Composable
+private fun SummaryBadge(label: String, count: Int, color: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(8.dp).clip(CircleShape).background(color))
+        Text(" $label: $count", style = MaterialTheme.typography.labelSmall)
+    }
 }
 
 private fun copyToClipboard(context: Context, text: String) {

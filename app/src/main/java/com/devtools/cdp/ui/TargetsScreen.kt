@@ -2,6 +2,7 @@ package com.devtools.cdp.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,16 +18,19 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -34,11 +38,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.devtools.cdp.data.TargetInfo
+import kotlinx.coroutines.delay
 
 /**
  * Targets 页（chrome://inspect 风格）。
@@ -52,6 +58,19 @@ import com.devtools.cdp.data.TargetInfo
  */
 @Composable
 fun TargetsScreen(viewModel: CdpViewModel, state: UiState) {
+    var autoRefresh by remember { mutableStateOf(false) }
+    var lastRefreshTime by remember { mutableStateOf<Long?>(null) }
+    var connectedTargetId by remember { mutableStateOf<String?>(null) }
+
+    // 自动刷新：每 5 秒拉一次 abstract targets
+    LaunchedEffect(autoRefresh) {
+        while (autoRefresh) {
+            viewModel.refreshAbstractTargetsDetailed()
+            lastRefreshTime = System.currentTimeMillis()
+            delay(5000)
+        }
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxWidth().padding(8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -158,7 +177,38 @@ fun TargetsScreen(viewModel: CdpViewModel, state: UiState) {
         }
 
         // ---- 2. 远程 Socket（显示所属应用）----
-        item { SectionHeader("远程调试目标", "从 /proc/net/unix 枚举，已关联所属应用") }
+        item {
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    SectionHeader(
+                        "远程调试目标 (${state.abstractTargetsDetailed.size})",
+                        "从 /proc/net/unix 枚举，已关联所属应用"
+                    )
+                    Spacer(Modifier.weight(1f))
+                    IconButton(onClick = { autoRefresh = !autoRefresh }) {
+                        Icon(
+                            Icons.Filled.Autorenew,
+                            contentDescription = "自动刷新",
+                            tint = if (autoRefresh) MaterialTheme.colorScheme.primary
+                                   else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                val t = lastRefreshTime
+                if (t != null) {
+                    val timeStr = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+                        .format(java.util.Date(t))
+                    Text(
+                        "上次刷新: $timeStr",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
         if (state.abstractTargetsDetailed.isEmpty() && state.abstractTargets.isEmpty()) {
             item {
                 HintText("未发现 *_devtools_remote。请打开 Chrome 或可调试 WebView，再点右上角刷新。")
@@ -169,14 +219,35 @@ fun TargetsScreen(viewModel: CdpViewModel, state: UiState) {
         }
 
         // ---- 3. 页面目标 ----
-        item { SectionHeader("页面目标", "来自 /json/list") }
+        item { SectionHeader("页面目标 (${state.httpTargets.size})", "来自 /json/list") }
+        if (state.httpTargets.size == 1) {
+            val single = state.httpTargets.first()
+            item {
+                Button(
+                    onClick = {
+                        connectedTargetId = single.id
+                        viewModel.connectTarget(single)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("快速连接：${single.displayTitle()}") }
+            }
+        }
         if (state.httpTargets.isEmpty()) {
             item {
                 HintText("无页面目标。请启动桥接并在浏览器打开网页。")
             }
         }
         items(state.httpTargets, key = { it.id ?: it.title ?: it.url ?: java.util.UUID.randomUUID().toString() }) { tgt ->
-            TargetCard(tgt, state.cdpConnected) { viewModel.connectTarget(tgt) }
+            val isActive = state.cdpConnected && connectedTargetId == tgt.id
+            TargetCard(
+                tgt = tgt,
+                connected = state.cdpConnected,
+                isActive = isActive,
+                onInspect = {
+                    connectedTargetId = tgt.id
+                    viewModel.connectTarget(tgt)
+                }
+            )
         }
     }
 }
@@ -263,9 +334,13 @@ private fun RemoteSocketCard(tgt: AbstractTarget, state: UiState, viewModel: Cdp
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun TargetCard(tgt: TargetInfo, connected: Boolean, onInspect: () -> Unit) {
+private fun TargetCard(tgt: TargetInfo, connected: Boolean, isActive: Boolean, onInspect: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    Card(modifier = Modifier.fillMaxWidth()) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (isActive) Modifier.border(2.dp, MaterialTheme.colorScheme.primary) else Modifier)
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -303,9 +378,10 @@ private fun TargetCard(tgt: TargetInfo, connected: Boolean, onInspect: () -> Uni
 @Composable
 private fun TypeBadge(type: String) {
     val (bg, fg, label) = when (type) {
-        "page" -> Triple(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.onPrimaryContainer, "页面")
-        "background_page" -> Triple(MaterialTheme.colorScheme.tertiaryContainer, MaterialTheme.colorScheme.onTertiaryContainer, "后台页")
-        else -> Triple(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, type)
+        "page" -> Triple(Color(0xFF2196F3), Color.White, "page")
+        "service_worker" -> Triple(Color(0xFFFF9800), Color.White, "service_worker")
+        "background_page" -> Triple(Color(0xFF9C27B0), Color.White, "background_page")
+        else -> Triple(Color(0xFF9E9E9E), Color.White, type)
     }
     Box(
         modifier = Modifier

@@ -1,5 +1,6 @@
 package com.devtools.cdp.ui
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -49,6 +50,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.google.gson.Gson
 
 private enum class AppTab(val label: String) {
     COOKIES("Cookies"), LOCAL("本地存储"), SESSION("会话存储")
@@ -75,8 +77,7 @@ fun ApplicationScreen(viewModel: CdpViewModel, state: UiState) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(8.dp)
             )
-            return@Column
-        }
+        } else {
         TabRow(
             selectedTabIndex = tab.ordinal,
             containerColor = MaterialTheme.colorScheme.surfaceVariant
@@ -92,7 +93,14 @@ fun ApplicationScreen(viewModel: CdpViewModel, state: UiState) {
                             AppTab.SESSION -> viewModel.getSessionStorage()
                         }
                     },
-                    text = { Text(t.label, style = MaterialTheme.typography.labelSmall) }
+                    text = {
+                        val cnt = when (t) {
+                            AppTab.COOKIES -> state.cookies.size
+                            AppTab.LOCAL -> state.localStorage.size
+                            AppTab.SESSION -> state.sessionStorage.size
+                        }
+                        Text("${t.label} ($cnt)", style = MaterialTheme.typography.labelSmall)
+                    }
                 )
             }
         }
@@ -102,6 +110,7 @@ fun ApplicationScreen(viewModel: CdpViewModel, state: UiState) {
             AppTab.LOCAL -> StorageTab("localStorage", state.localStorage, viewModel)
             AppTab.SESSION -> StorageTab("sessionStorage", state.sessionStorage, viewModel)
         }
+        }
     }
 }
 
@@ -110,6 +119,7 @@ private fun CookiesTab(state: UiState, viewModel: CdpViewModel) {
     val context = LocalContext.current
     var editing by remember { mutableStateOf<CookieInfo?>(null) }
     var adding by remember { mutableStateOf(false) }
+    var cookieSearch by remember { mutableStateOf("") }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -123,6 +133,15 @@ private fun CookiesTab(state: UiState, viewModel: CdpViewModel) {
             IconButton(onClick = { viewModel.getCookies() }) {
                 Icon(Icons.Filled.Refresh, contentDescription = "刷新")
             }
+            IconButton(onClick = {
+                val json = Gson().toJson(state.cookies.map {
+                    mapOf("name" to it.name, "value" to it.value, "domain" to it.domain, "path" to it.path)
+                })
+                copyText(context, json)
+                Toast.makeText(context, "已复制 ${state.cookies.size} 条 Cookie JSON", Toast.LENGTH_SHORT).show()
+            }) {
+                Icon(Icons.Filled.ContentCopy, contentDescription = "复制全部 Cookie JSON")
+            }
             IconButton(onClick = { adding = true }) {
                 Icon(Icons.Filled.Add, contentDescription = "新增 Cookie")
             }
@@ -131,8 +150,22 @@ private fun CookiesTab(state: UiState, viewModel: CdpViewModel) {
                     tint = MaterialTheme.colorScheme.error)
             }
         }
+        OutlinedTextField(
+            value = cookieSearch,
+            onValueChange = { cookieSearch = it },
+            modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+            placeholder = { Text("搜索 Cookie...") },
+            singleLine = true
+        )
+        val filteredCookies = remember(state.cookies, cookieSearch) {
+            if (cookieSearch.isBlank()) state.cookies
+            else state.cookies.filter {
+                it.name.contains(cookieSearch, ignoreCase = true) ||
+                    it.value.contains(cookieSearch, ignoreCase = true)
+            }
+        }
         LazyColumn(modifier = Modifier.fillMaxSize()) {
-            items(state.cookies, key = { "${it.name}@${it.domain}${it.path}" }) { c ->
+            items(filteredCookies, key = { "${it.name}@${it.domain}${it.path}" }) { c ->
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
                     colors = CardDefaults.cardColors(
@@ -223,6 +256,8 @@ private fun StorageTab(which: String, items: List<StorageItem>, viewModel: CdpVi
     val context = LocalContext.current
     var editing by remember { mutableStateOf<StorageItem?>(null) }
     var adding by remember { mutableStateOf(false) }
+    var storageSearch by remember { mutableStateOf("") }
+    var showClearDialog by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -236,16 +271,39 @@ private fun StorageTab(which: String, items: List<StorageItem>, viewModel: CdpVi
             IconButton(onClick = {
                 if (which == "localStorage") viewModel.getLocalStorage() else viewModel.getSessionStorage()
             }) { Icon(Icons.Filled.Refresh, contentDescription = "刷新") }
+            IconButton(onClick = {
+                val json = Gson().toJson(items.map {
+                    mapOf("key" to it.key, "value" to it.value)
+                })
+                copyText(context, json)
+                Toast.makeText(context, "已导出 ${items.size} 条 ${which} JSON", Toast.LENGTH_SHORT).show()
+            }) {
+                Icon(Icons.Filled.ContentCopy, contentDescription = "导出 ${which} JSON")
+            }
             IconButton(onClick = { adding = true }) {
                 Icon(Icons.Filled.Add, contentDescription = "新增")
             }
-            IconButton(onClick = { viewModel.clearStorage(which) }) {
+            IconButton(onClick = { showClearDialog = true }) {
                 Icon(Icons.Filled.Delete, contentDescription = "清空",
                     tint = MaterialTheme.colorScheme.error)
             }
         }
+        OutlinedTextField(
+            value = storageSearch,
+            onValueChange = { storageSearch = it },
+            modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+            placeholder = { Text("搜索...") },
+            singleLine = true
+        )
+        val filteredItems = remember(items, storageSearch) {
+            if (storageSearch.isBlank()) items
+            else items.filter {
+                it.key.contains(storageSearch, ignoreCase = true) ||
+                    it.value.contains(storageSearch, ignoreCase = true)
+            }
+        }
         LazyColumn(modifier = Modifier.fillMaxSize()) {
-            items(items, key = { it.key }) { item ->
+            items(filteredItems, key = { it.key }) { item ->
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
@@ -307,6 +365,22 @@ private fun StorageTab(which: String, items: List<StorageItem>, viewModel: CdpVi
             onConfirm = { k, v ->
                 viewModel.setStorageItem(which, k, v)
                 adding = false
+            }
+        )
+    }
+    if (showClearDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearDialog = false },
+            title = { Text("确认清空") },
+            text = { Text("确认清空所有 ${which}？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.clearStorage(which)
+                    showClearDialog = false
+                }) { Text("确定") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearDialog = false }) { Text("取消") }
             }
         )
     }

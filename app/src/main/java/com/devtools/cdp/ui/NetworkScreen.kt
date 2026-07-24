@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -100,6 +101,7 @@ private enum class DetailTab(val label: String) {
 fun NetworkScreen(viewModel: CdpViewModel, state: UiState) {
     var filter by remember { mutableStateOf(NetFilter.ALL) }
     var expandedReqId by remember { mutableStateOf<String?>(null) }
+    var searchQuery by remember { mutableStateOf("") }
     val context = LocalContext.current
 
     Column(modifier = Modifier.fillMaxSize().padding(6.dp)) {
@@ -110,10 +112,15 @@ fun NetworkScreen(viewModel: CdpViewModel, state: UiState) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(8.dp)
             )
-            return@Column
+        } else {
+
+        val filtered = remember(state.network, filter, searchQuery) {
+            state.network.filter {
+                it.matchType(filter) && (searchQuery.isBlank() || it.url.contains(searchQuery, ignoreCase = true))
+            }
         }
 
-        // 过滤 chip + 清空
+        // 过滤 chip + 清空 + 复制全部 URL
         Row(
             modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -131,6 +138,11 @@ fun NetworkScreen(viewModel: CdpViewModel, state: UiState) {
             IconButton(onClick = { showNewReqDialog = true }) {
                 Icon(Icons.Filled.Add, contentDescription = "新建请求")
             }
+            IconButton(onClick = {
+                copyToClipboard(context, filtered.joinToString("\n") { it.url })
+            }) {
+                Icon(Icons.Filled.ContentCopy, contentDescription = "复制全部 URL")
+            }
             IconButton(onClick = { viewModel.clearNetwork(); expandedReqId = null }) {
                 Icon(Icons.Filled.Delete, contentDescription = "清空")
             }
@@ -146,19 +158,48 @@ fun NetworkScreen(viewModel: CdpViewModel, state: UiState) {
             }
         }
 
-        val filtered = remember(state.network, filter) {
-            state.network.filter { it.matchType(filter) }
-        }
-        Text(
-            "请求 ${filtered.size} / 共 ${state.network.size}",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(bottom = 4.dp)
+        // URL 搜索框
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+            placeholder = { Text("搜索 URL...") },
+            singleLine = true,
+            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) }
         )
+
+        // 信息行：请求数 / 总数 / 失败数 / 总流量
+        val totalBytes = filtered.sumOf { it.encodedDataLength }
+        val failedCount = filtered.count { it.failed }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                "请求 ${filtered.size} / 共 ${state.network.size}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (failedCount > 0) {
+                Text(
+                    "✗ $failedCount",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            Text(
+                "↓ ${formatBytes(totalBytes)}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
 
         LazyColumn(modifier = Modifier.fillMaxSize()) {
             items(filtered, key = { it.requestId }) { req ->
                 val isExpanded = expandedReqId == req.requestId
+                val totalTime = req.timing["total"] ?: 0.0
+                val isSlow = totalTime > 1000 || (req.encodedDataLength > 0 && !req.finished)
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -174,9 +215,11 @@ fun NetworkScreen(viewModel: CdpViewModel, state: UiState) {
                             onLongClick = { copyToClipboard(context, req.url) }
                         ),
                     colors = CardDefaults.cardColors(
-                        containerColor = if (isExpanded)
-                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
-                        else MaterialTheme.colorScheme.surface
+                        containerColor = when {
+                            isExpanded -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+                            isSlow -> Color(0xFFFFF3E0)
+                            else -> MaterialTheme.colorScheme.surface
+                        }
                     )
                 ) {
                     Column(modifier = Modifier.padding(8.dp)) {
@@ -213,6 +256,12 @@ fun NetworkScreen(viewModel: CdpViewModel, state: UiState) {
                             style = MaterialTheme.typography.bodySmall,
                             maxLines = if (isExpanded) 2 else 1,
                             overflow = TextOverflow.Ellipsis)
+                        // 响应耗时
+                        if (req.timing.isNotEmpty() && req.timing.containsKey("total")) {
+                            Text("⏱ ${totalTime.toInt()}ms",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                         if (req.failed) {
                             Text("✗ ${req.errorText ?: "failed"}",
                                 color = MaterialTheme.colorScheme.error,
@@ -226,6 +275,7 @@ fun NetworkScreen(viewModel: CdpViewModel, state: UiState) {
                     }
                 }
             }
+        }
         }
     }
 }
@@ -262,6 +312,11 @@ private fun NetworkDetailPanel(
                 icon = Icons.Filled.ContentCopy,
                 label = "cURL",
                 onClick = { copyToClipboard(context, toCurl(currentReq)) }
+            )
+            ActionButton(
+                icon = Icons.Filled.ContentCopy,
+                label = "复制URL",
+                onClick = { copyToClipboard(context, currentReq.url) }
             )
         }
 
@@ -482,7 +537,17 @@ private fun HeadersTab(req: NetworkRequest, context: Context) {
 
         if (req.responseHeaders.isNotEmpty()) {
             Spacer(Modifier.height(4.dp))
-            SectionTitle("Response Headers")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SectionTitle("Response Headers")
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = {
+                    copyToClipboard(context, req.responseHeaders.entries.joinToString("\n") { "${it.key}: ${it.value}" })
+                }) {
+                    Icon(Icons.Filled.ContentCopy, contentDescription = "复制全部",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(16.dp))
+                }
+            }
             req.responseHeaders.forEach { (k, v) -> KV(k, v, copyable = true, context = context) }
         }
         if (req.requestHeaders.isNotEmpty()) {
@@ -635,6 +700,14 @@ private fun Badge(text: String, bg: Color) {
     ) {
         Text(text, style = MaterialTheme.typography.labelSmall, color = Color.White)
     }
+}
+
+private fun formatBytes(bytes: Long): String {
+    if (bytes < 1024) return "${bytes}B"
+    val kb = bytes / 1024.0
+    if (kb < 1024) return String.format("%.1fKB", kb)
+    val mb = kb / 1024.0
+    return String.format("%.2fMB", mb)
 }
 
 private fun copyToClipboard(context: Context, text: String) {

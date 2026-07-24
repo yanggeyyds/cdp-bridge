@@ -3,11 +3,13 @@ package com.devtools.cdp.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -18,17 +20,22 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.UnfoldLess
+import androidx.compose.material.icons.filled.UnfoldMore
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -48,6 +55,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -87,6 +95,7 @@ fun ElementsScreen(viewModel: CdpViewModel, state: UiState) {
     val expanded = remember { mutableStateMapOf<Int, Boolean>() }
     var selectedNodeId by remember { mutableStateOf<Int?>(null) }
     var editAction by remember { mutableStateOf<EditAction?>(null) }
+    var domSearch by remember { mutableStateOf("") }
     val context = LocalContext.current
 
     Column(modifier = Modifier.fillMaxSize().padding(6.dp)) {
@@ -97,8 +106,7 @@ fun ElementsScreen(viewModel: CdpViewModel, state: UiState) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(8.dp)
             )
-            return@Column
-        }
+        } else {
 
         // 工具栏
         Row(
@@ -107,6 +115,19 @@ fun ElementsScreen(viewModel: CdpViewModel, state: UiState) {
         ) {
             Button(onClick = { viewModel.refreshDom() }) { Text("刷新 DOM") }
             Spacer(Modifier.width(6.dp))
+            IconButton(onClick = {
+                expanded.keys.toList().forEach { expanded[it] = false }
+            }) {
+                Icon(Icons.Filled.UnfoldLess, contentDescription = "全部折叠",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            IconButton(onClick = {
+                val r = state.domRoot
+                if (r != null) expandAll(r, expanded)
+            }) {
+                Icon(Icons.Filled.UnfoldMore, contentDescription = "全部展开",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             val sel = selectedNodeId
             if (sel != null) {
                 Text("已选 #$sel",
@@ -127,6 +148,26 @@ fun ElementsScreen(viewModel: CdpViewModel, state: UiState) {
                     Icon(Icons.Filled.ContentCopy, contentDescription = "复制 HTML",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                IconButton(onClick = {
+                    val node = findNode(state.domRoot, sel)
+                    if (node != null) {
+                        copyToClipboard(context, buildCssSelector(node))
+                        Toast.makeText(context, "已复制 CSS 选择器", Toast.LENGTH_SHORT).show()
+                    }
+                }) {
+                    Icon(Icons.Filled.Code, contentDescription = "复制 CSS 选择器",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                IconButton(onClick = {
+                    val node = findNode(state.domRoot, sel)
+                    if (node != null) {
+                        copyToClipboard(context, buildXPath(state.domRoot, node))
+                        Toast.makeText(context, "已复制 XPath", Toast.LENGTH_SHORT).show()
+                    }
+                }) {
+                    Icon(Icons.Filled.AccountTree, contentDescription = "复制 XPath",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 IconButton(onClick = { editAction = EditAction.DeleteNode(sel) }) {
                     Icon(Icons.Filled.Delete, contentDescription = "删除节点",
                         tint = MaterialTheme.colorScheme.error)
@@ -139,6 +180,16 @@ fun ElementsScreen(viewModel: CdpViewModel, state: UiState) {
             }
         }
 
+        // DOM 搜索/过滤
+        OutlinedTextField(
+            value = domSearch,
+            onValueChange = { domSearch = it },
+            modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+            placeholder = { Text("搜索标签名...") },
+            singleLine = true,
+            textStyle = MaterialTheme.typography.bodySmall
+        )
+
         val root = state.domRoot
         if (root == null) {
             Text("(未获取 DOM 树，点上方「刷新 DOM」)",
@@ -148,11 +199,15 @@ fun ElementsScreen(viewModel: CdpViewModel, state: UiState) {
             val flat = remember(root, expanded.toMap(), selectedNodeId) {
                 buildFlatList(root, 0, expanded).let { if (it.size > 300) it.subList(0, 300).toList() else it.toList() }
             }
+            val visible = remember(flat, domSearch) {
+                if (domSearch.isBlank()) flat
+                else flat.filter { it.node.nodeName.contains(domSearch, ignoreCase = true) }
+            }
             LazyColumn(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(0.dp)
             ) {
-                items(flat, key = { "${it.node.nodeId}-${it.depth}-${it.pathIndex}" }) { item ->
+                items(visible, key = { "${it.node.nodeId}-${it.depth}-${it.pathIndex}" }) { item ->
                     NodeRow(
                         item = item,
                         expanded = expanded,
@@ -203,6 +258,7 @@ fun ElementsScreen(viewModel: CdpViewModel, state: UiState) {
                 StylesCard(state, viewModel, sid)
             }
         }
+        }
     }
 
     // 编辑对话框：必须用 if/else 而非 ?.let，否则 @Composable 调用会破坏组结构
@@ -247,6 +303,14 @@ private fun NodeRow(
     val hasChildren = !node.children.isNullOrEmpty()
     val isOpen = expanded[node.nodeId] ?: false
     var lastClick by remember { mutableStateOf(0L) }
+    val context = LocalContext.current
+
+    val dotColor = when (node.nodeType) {
+        1 -> Color(0xFF81C995)
+        3 -> Color(0xFF9AA0A6)
+        8 -> Color(0xFFF9AB6B)
+        else -> Color(0xFF9AA0A6)
+    }
 
     Row(
         modifier = Modifier
@@ -260,7 +324,11 @@ private fun NodeRow(
                     else onClick()
                     lastClick = now
                 },
-                onLongClick = onLongClick
+                onLongClick = {
+                    copyToClipboard(context, renderNodePlain(node))
+                    Toast.makeText(context, "已复制 outerHTML", Toast.LENGTH_SHORT).show()
+                    onLongClick()
+                }
             )
             .padding(start = (item.depth * 12).dp, top = 1.dp, bottom = 1.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -278,6 +346,13 @@ private fun NodeRow(
         } else {
             Spacer(Modifier.size(18.dp))
         }
+        Box(
+            modifier = Modifier
+                .padding(end = 4.dp)
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(dotColor)
+        )
         Text(
             text = renderNodeAnnotated(node),
             fontFamily = FontFamily.Monospace,
@@ -445,6 +520,59 @@ private fun findNode(root: DomNode?, nodeId: Int): DomNode? {
         findNode(c, nodeId)?.let { return it }
     }
     return null
+}
+
+/** 递归展开所有有子节点的节点。 */
+private fun expandAll(
+    node: DomNode,
+    expanded: androidx.compose.runtime.snapshots.SnapshotStateMap<Int, Boolean>
+) {
+    if (!node.children.isNullOrEmpty()) {
+        expanded[node.nodeId] = true
+        node.children!!.forEach { expandAll(it, expanded) }
+    }
+}
+
+/** 查找从 root 到 targetId 的路径（含两端）。 */
+private fun findPath(root: DomNode?, targetId: Int): List<DomNode>? {
+    if (root == null) return null
+    if (root.nodeId == targetId) return listOf(root)
+    root.children?.forEach { c ->
+        val sub = findPath(c, targetId)
+        if (sub != null) return listOf(root) + sub
+    }
+    return null
+}
+
+/** 构建 CSS 选择器：tagName#id.class1.class2。 */
+private fun buildCssSelector(node: DomNode): String {
+    val tag = node.localName.ifBlank { node.nodeName.lowercase() }
+    val pairs = node.attributePairs()
+    val id = pairs.firstOrNull { it.first.equals("id", ignoreCase = true) }?.second
+    val classes = pairs.firstOrNull { it.first.equals("class", ignoreCase = true) }?.second
+        ?.split(" ")?.filter { it.isNotBlank() }
+    val sb = StringBuilder(tag)
+    if (!id.isNullOrBlank()) sb.append("#").append(id)
+    if (classes != null) classes.forEach { sb.append(".").append(it) }
+    return sb.toString()
+}
+
+/** 构建 XPath：/html[1]/body[1]/div[2]/... */
+private fun buildXPath(root: DomNode?, target: DomNode): String {
+    val path = findPath(root, target.nodeId) ?: return "/${target.localName}"
+    val sb = StringBuilder()
+    for (i in path.indices) {
+        val n = path[i]
+        if (!n.isElement()) continue
+        val tag = n.localName.ifBlank { n.nodeName.lowercase() }
+        val siblings = if (i > 0) path[i - 1].children ?: emptyList() else listOf(n)
+        val sameTag = siblings.filter {
+            it.isElement() && (it.localName.ifBlank { it.nodeName.lowercase() }) == tag
+        }
+        val idx = sameTag.indexOfFirst { it.nodeId == n.nodeId } + 1
+        if (idx > 0) sb.append("/").append(tag).append("[").append(idx).append("]")
+    }
+    return sb.toString().ifBlank { "/${target.localName}" }
 }
 
 /** 带着色的节点渲染：标签蓝、属性名橙、属性值绿、文本灰。 */

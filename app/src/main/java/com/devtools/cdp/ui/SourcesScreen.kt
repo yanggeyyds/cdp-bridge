@@ -3,7 +3,9 @@ package com.devtools.cdp.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -24,6 +27,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -41,6 +45,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
@@ -78,8 +84,7 @@ fun SourcesScreen(viewModel: CdpViewModel, state: UiState) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(8.dp)
             )
-            return@Column
-        }
+        } else {
 
         TabRow(
             selectedTabIndex = tab.ordinal,
@@ -102,6 +107,7 @@ fun SourcesScreen(viewModel: CdpViewModel, state: UiState) {
             SourcesTab.SCRIPTS -> ScriptsTab(state, viewModel, context)
             SourcesTab.SNIPPET -> SnippetTab(state, viewModel, context)
         }
+        }
     }
 }
 
@@ -111,6 +117,7 @@ fun SourcesScreen(viewModel: CdpViewModel, state: UiState) {
 private fun ScriptsTab(state: UiState, viewModel: CdpViewModel, context: Context) {
     var search by remember { mutableStateOf("") }
     var selectedScriptId by remember { mutableStateOf<String?>(null) }
+    var sourceSearch by remember { mutableStateOf("") }
 
     // 首次进入若未启用 Debugger，自动启用
     androidx.compose.runtime.LaunchedEffect(state.cdpConnected, state.sourcesEnabled) {
@@ -165,6 +172,16 @@ private fun ScriptsTab(state: UiState, viewModel: CdpViewModel, context: Context
                             modifier = Modifier.weight(1f)
                         )
                         if (src != null && src.isNotEmpty()) {
+                            Text("Lines: ${src.count { it == '\n' } + 1}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(end = 4.dp))
+                            Button(onClick = {
+                                copyToClipboard(context, src)
+                                Toast.makeText(context, "已复制全部源码", Toast.LENGTH_SHORT).show()
+                            }) {
+                                Text("复制全部源码")
+                            }
                             IconButton(onClick = { copyToClipboard(context, src) }) {
                                 Icon(Icons.Filled.ContentCopy, contentDescription = "复制源码",
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -178,6 +195,13 @@ private fun ScriptsTab(state: UiState, viewModel: CdpViewModel, context: Context
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis)
                     }
+                    OutlinedTextField(
+                        value = sourceSearch,
+                        onValueChange = { sourceSearch = it },
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+                        placeholder = { Text("在源码中搜索...") },
+                        singleLine = true
+                    )
                     Spacer(Modifier.height(4.dp))
                     when {
                         src == null -> {
@@ -192,12 +216,29 @@ private fun ScriptsTab(state: UiState, viewModel: CdpViewModel, context: Context
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                         else -> {
-                            LazyColumn(modifier = Modifier.fillMaxSize()) {
-                                item {
-                                    Text(src.take(20000),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        fontFamily = FontFamily.Monospace,
-                                        modifier = Modifier.fillMaxWidth().padding(2.dp))
+                            val lines = remember(src) { src.split("\n") }
+                            val matched = remember(lines, sourceSearch) {
+                                if (sourceSearch.isBlank()) null
+                                else lines.mapIndexed { i, l -> (i + 1) to l }
+                                    .filter { it.second.contains(sourceSearch, ignoreCase = true) }
+                            }
+                            if (matched == null) {
+                                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                                    item {
+                                        Text(src.take(20000),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontFamily = FontFamily.Monospace,
+                                            modifier = Modifier.fillMaxWidth().padding(2.dp))
+                                    }
+                                }
+                            } else {
+                                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                                    items(matched) { (lineNo, line) ->
+                                        Text("$lineNo: $line",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontFamily = FontFamily.Monospace,
+                                            modifier = Modifier.fillMaxWidth().padding(2.dp))
+                                    }
                                 }
                             }
                         }
@@ -213,7 +254,10 @@ private fun ScriptsTab(state: UiState, viewModel: CdpViewModel, context: Context
                         if (state.scriptSources[s.scriptId] == null) {
                             viewModel.fetchScriptSource(s.scriptId)
                         }
-                    }, onCopy = { copyToClipboard(context, s.url) })
+                    }, onCopy = {
+                        copyToClipboard(context, s.url)
+                        Toast.makeText(context, "已复制脚本 URL", Toast.LENGTH_SHORT).show()
+                    })
                 }
             }
         }
@@ -242,6 +286,26 @@ private fun ScriptRow(s: ScriptInfo, onClick: () -> Unit, onCopy: () -> Unit) {
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                val fileName = s.url.substringAfterLast('/').substringBefore('?').substringBefore('#')
+                val ext = if (fileName.contains('.')) fileName.substringAfterLast('.').lowercase() else ""
+                if (ext.isNotEmpty()) {
+                    val badgeColor = when (ext) {
+                        "js" -> Color(0xFFFFC107)
+                        "mjs" -> Color(0xFF2196F3)
+                        "css" -> Color(0xFF9C27B0)
+                        else -> Color.Gray
+                    }
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(badgeColor.copy(alpha = 0.2f))
+                            .padding(horizontal = 4.dp, vertical = 1.dp)
+                    ) {
+                        Text(".$ext",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = badgeColor)
+                    }
+                }
                 if (s.isContentScript) {
                     Text(" content",
                         style = MaterialTheme.typography.labelSmall,

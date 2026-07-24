@@ -1,5 +1,6 @@
 package com.devtools.cdp.ui
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
@@ -30,6 +32,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -41,9 +44,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.devtools.cdp.BuildConfig
+import kotlinx.coroutines.delay
 
 private enum class CdpTab(val title: String) {
     TARGETS("目标"), CONSOLE("控制台"), ELEMENTS("元素"),
@@ -62,9 +67,30 @@ private enum class CdpTab(val title: String) {
 @Composable
 fun AppRoot(viewModel: CdpViewModel, onModeChange: (BridgeMode) -> Unit) {
     val state by viewModel.ui.collectAsState()
+    val context = LocalContext.current
+    var autoReconnect by remember { mutableStateOf(true) }
 
     var tabIndex by rememberSaveable { mutableIntStateOf(0) }
     val tabs = CdpTab.entries
+
+    // Feature 50: 桥接运行但 CDP 断开时，2 秒后自动重连
+    LaunchedEffect(autoReconnect, state.bridgeState, state.cdpConnected) {
+        if (autoReconnect &&
+            state.bridgeState == BridgeState.BRIDGE_RUNNING &&
+            !state.cdpConnected) {
+            delay(2000)
+            if (autoReconnect &&
+                state.bridgeState == BridgeState.BRIDGE_RUNNING &&
+                !state.cdpConnected) {
+                val first = state.httpTargets.firstOrNull()
+                if (first != null) {
+                    viewModel.connectTarget(first)
+                } else {
+                    viewModel.refreshHttpTargets()
+                }
+            }
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -83,13 +109,52 @@ fun AppRoot(viewModel: CdpViewModel, onModeChange: (BridgeMode) -> Unit) {
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        // Feature 48: 已连接 CDP 时在副标题区显示连接状态
+                        if (state.cdpConnected && state.version != null) {
+                            Text(
+                                "CDP 已连接",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
                     }
                 },
                 actions = {
                     // 模式切换：Root / Shizuku
                     ModeSwitcher(state.mode, onModeChange)
+                    // Feature 45: CDP 连接状态颜色指示点（绿=已连接 / 黄=桥接运行未连 / 红=未连接）
+                    CdpConnectionDot(state, modifier = Modifier.padding(end = 4.dp))
                     // 状态指示 dot（红/黄/绿）
                     StatusDot(state.bridgeState, modifier = Modifier.padding(end = 4.dp))
+                    // Feature 46: 快速重连（桥接运行但未连 CDP）
+                    if (state.bridgeState == BridgeState.BRIDGE_RUNNING && !state.cdpConnected) {
+                        TextButton(onClick = {
+                            val first = state.httpTargets.firstOrNull()
+                            if (first != null) {
+                                viewModel.connectTarget(first)
+                            } else {
+                                viewModel.refreshHttpTargets()
+                            }
+                        }) {
+                            Text("重连", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                    // Feature 50: 自动重连开关
+                    IconButton(onClick = {
+                        autoReconnect = !autoReconnect
+                        Toast.makeText(
+                            context,
+                            if (autoReconnect) "自动重连已开启" else "自动重连已关闭",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }) {
+                        Icon(
+                            Icons.Filled.Autorenew,
+                            contentDescription = "自动重连",
+                            tint = if (autoReconnect) MaterialTheme.colorScheme.primary
+                                   else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     IconButton(onClick = { viewModel.refreshAbstractTargetsDetailed() }) {
                         Icon(Icons.Filled.Refresh, contentDescription = "刷新枚举")
                     }
@@ -186,6 +251,22 @@ private fun StatusDot(state: BridgeState, modifier: Modifier = Modifier) {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
+}
+
+/** Feature 45: CDP 连接状态指示点：绿色=已连接，黄色=桥接运行未连 CDP，红色=未连接。 */
+@Composable
+private fun CdpConnectionDot(state: UiState, modifier: Modifier = Modifier) {
+    val color = when {
+        state.cdpConnected -> Color(0xFF34A853)
+        state.bridgeState == BridgeState.BRIDGE_RUNNING -> Color(0xFFFBBC04)
+        else -> Color(0xFFEA4335)
+    }
+    Box(
+        modifier = modifier
+            .size(10.dp)
+            .clip(CircleShape)
+            .background(color)
+    )
 }
 
 /** 模式切换器：Root（默认，需 root 设备）/ Shizuku（非 Root，需 Shizuku App）。 */
