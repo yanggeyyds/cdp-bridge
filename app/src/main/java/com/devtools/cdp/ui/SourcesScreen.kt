@@ -220,6 +220,7 @@ private fun ScriptsTab(state: UiState, viewModel: CdpViewModel, context: Context
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ScriptRow(s: ScriptInfo, onClick: () -> Unit, onCopy: () -> Unit) {
     Card(

@@ -269,12 +269,13 @@ private fun HeadersTab(req: NetworkRequest, context: Context) {
 
 @Composable
 private fun ResponseTab(req: NetworkRequest, context: Context) {
+    val body = req.body
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             SectionTitle("Response Body")
             Spacer(Modifier.weight(1f))
-            if (req.bodyFetched && req.body.isNotEmpty()) {
-                IconButton(onClick = { copyToClipboard(context, req.body) }) {
+            if (req.bodyFetched && !body.isNullOrEmpty()) {
+                IconButton(onClick = { copyToClipboard(context, body) }) {
                     Icon(Icons.Filled.ContentCopy, contentDescription = "复制响应",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -287,11 +288,11 @@ private fun ResponseTab(req: NetworkRequest, context: Context) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             !req.bodyFetched -> Text("正在拉取响应体…", style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-            req.bodyBase64Encoded -> Text("(base64 编码的 ${req.body.length} 字节二进制数据)",
+            req.bodyBase64Encoded -> Text("(base64 编码的 ${body?.length ?: 0} 字节二进制数据)",
                 style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
-            req.body.isEmpty() -> Text("(空响应体)", style = MaterialTheme.typography.bodySmall,
+            body.isNullOrEmpty() -> Text("(空响应体)", style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-            else -> Text(req.body.take(8000),
+            else -> Text(body.take(8000),
                 style = MaterialTheme.typography.bodySmall,
                 fontFamily = FontFamily.Monospace,
                 modifier = Modifier.fillMaxWidth().padding(2.dp))
@@ -301,18 +302,19 @@ private fun ResponseTab(req: NetworkRequest, context: Context) {
 
 @Composable
 private fun PayloadTab(req: NetworkRequest, context: Context) {
+    val postData = req.postData
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
         SectionTitle("Request Payload")
-        if (!req.hasPostData || req.postData.isNullOrBlank()) {
+        if (postData.isNullOrBlank()) {
             Text("（无 POST 请求体）", style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(req.postData.take(8000),
+                Text(postData.take(8000),
                     style = MaterialTheme.typography.bodySmall,
                     fontFamily = FontFamily.Monospace,
                     modifier = Modifier.weight(1f))
-                IconButton(onClick = { copyToClipboard(context, req.postData) }) {
+                IconButton(onClick = { copyToClipboard(context, postData) }) {
                     Icon(Icons.Filled.ContentCopy, contentDescription = "复制 Payload",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -347,6 +349,7 @@ private fun SectionTitle(title: String) {
     )
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun KV(key: String, value: String, copyable: Boolean = false, context: Context? = null) {
     Row(
