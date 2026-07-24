@@ -13,8 +13,8 @@ android {
         applicationId = "com.devtools.cdp"
         minSdk = 24
         targetSdk = 34
-        versionCode = 10
-        versionName = "1.9"
+        versionCode = 11
+        versionName = "1.9.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
@@ -40,6 +40,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // 用 debug keystore 给 release 签名，CI 无需密钥库即可产出可安装 APK。
+            // 本地默认 debug keystore 由 AGP 自动生成；CI 上首次构建也会生成。
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 

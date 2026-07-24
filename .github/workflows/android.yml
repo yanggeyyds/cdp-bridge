@@ -47,15 +47,16 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      - name: Build debug APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+      # 编译 release 版本（用 debug keystore 签名，产出可直接安装的 APK）
+      - name: Build release APK
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
 
       - name: Upload APK artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cdp-bridge-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: cdp-bridge-release-apk
+          path: app/build/outputs/apk/release/*.apk
           if-no-files-found: warn
 
       - name: Upload build reports

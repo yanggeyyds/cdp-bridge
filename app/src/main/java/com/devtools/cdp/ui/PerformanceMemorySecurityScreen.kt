@@ -172,11 +172,22 @@ fun SecurityScreen(viewModel: CdpViewModel, state: UiState) {
             if (obj == null) {
                 Text("解析失败", style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error)
-                return@Column
+            } else {
+                val isSecure = obj.get("isSecure")?.asBoolean ?: false
+                val mixed = obj.get("mixedContent")?.asBoolean ?: false
+                SecurityCard(isSecure, mixed, obj)
             }
-            val isSecure = obj.get("isSecure")?.asBoolean ?: false
-            val mixed = obj.get("mixedContent")?.asBoolean ?: false
-            Card(modifier = Modifier.fillMaxWidth(),
+        } ?: run {
+            Text("点上方刷新查看页面安全信息。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun SecurityCard(isSecure: Boolean, mixed: Boolean, obj: com.google.gson.JsonObject) {
+    Card(modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
                     containerColor = if (isSecure && !mixed)
                         MaterialTheme.colorScheme.secondaryContainer
@@ -199,13 +210,6 @@ fun SecurityScreen(viewModel: CdpViewModel, state: UiState) {
                             color = MaterialTheme.colorScheme.onErrorContainer)
                     }
                 }
-            }
-        } ?: run {
-            Text("点上方刷新查看页面安全信息。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
 }
 
 @Composable
