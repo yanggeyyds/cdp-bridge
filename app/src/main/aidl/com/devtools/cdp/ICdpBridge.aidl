@@ -21,6 +21,12 @@ interface ICdpBridge {
     // 返回不带 '@' 的 abstract socket 名列表（如 chrome_devtools_remote、webview_devtools_remote_8985）。
     List<String> listTargets() = 3;
 
+    // 探测 abstract socket 是否真的可连（不传输数据）。
+    // 返回 0=可连；-1=connect 失败（socket 不存在/进程未运行/权限不足）；
+    // -2=异常。用于在 startBridge 后立即判断 Chrome 是否真的在监听，
+    // 区别于 startBridge 仅绑定 TCP 监听、未验证对端。
+    int probeAbstract(String abstractName) = 4;
+
     // Shizuku 约定的销毁方法，transaction code 固定 16777114。
     // 在此方法内 System.exit(0) 让 UserService 进程退出。
     // 注意：aidl 要求"要么所有方法都赋 id，要么都不赋"，故其余方法也赋了小整数 id。

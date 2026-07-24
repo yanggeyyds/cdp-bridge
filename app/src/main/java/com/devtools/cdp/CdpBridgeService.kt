@@ -154,6 +154,36 @@ class CdpBridgeService : ICdpBridge.Stub() {
     }
 
     /**
+     * 探测 abstract socket 是否真的可连：调用 [NativeBridge.connectAbstract] 拿 fd，
+     * 成功即说明对端进程在监听；失败说明 socket 名虽在 /proc/net/unix 里（可能是残留条目），
+     * 但实际无进程 accept，或本进程无权限连。
+     *
+     * 这是关键诊断：startBridge 只绑定了本地 TCP 监听，并不验证 Chrome 端可达；
+     * 有了 probeAbstract，UI 能在桥接"启动成功"后立刻区分"Chrome 真的活着" vs "socket 是死条目"。
+     */
+    override fun probeAbstract(abstractName: String?): Int {
+        if (abstractName.isNullOrEmpty()) return -1
+        var fd: java.io.FileDescriptor? = null
+        return try {
+            fd = NativeBridge.connectAbstract(abstractName)
+            if (fd == null) {
+                Log.e(TAG, "probeAbstract($abstractName): connectAbstract returned null")
+                -1
+            } else {
+                Log.i(TAG, "probeAbstract($abstractName): connectable")
+                0
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "probeAbstract($abstractName) exception: ${t.message}")
+            -2
+        } finally {
+            if (fd != null) {
+                try { java.io.FileInputStream(fd).close() } catch (_: Throwable) {}
+            }
+        }
+    }
+
+    /**
      * Shizuku 约定的销毁方法（AIDL transaction code 16777114）。
      * 必须在此 System.exit(0) 让 UserService 进程退出。
      */

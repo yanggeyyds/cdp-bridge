@@ -53,6 +53,12 @@ fun TargetsScreen(viewModel: CdpViewModel, state: UiState) {
         // ---- 0. 连接向导卡（参考 JD phoneDebug 流程） ----
         item { ConnectionGuide(state) }
 
+        // ---- 0b. 诊断卡：桥接已运行但拿不到 /json/version ----
+        // 只在 BRIDGE_RUNNING 且 version 仍为空时显示，给用户具体错误 + 可操作建议
+        if (state.bridgeState == BridgeState.BRIDGE_RUNNING && state.version == null) {
+            item { DiagnosticsCard(state, viewModel) }
+        }
+
         // ---- 1. Bridge 状态卡 ----
         item {
             Card(
@@ -213,6 +219,95 @@ private fun TypeBadge(type: String) {
             .padding(horizontal = 6.dp, vertical = 2.dp)
     ) {
         Text(type, style = MaterialTheme.typography.labelSmall, color = fg)
+    }
+}
+
+/**
+ * 诊断卡：桥接 TCP 监听已起，但 /json/version 拿不到响应时显示。
+ *
+ * 综合展示三类信息，帮助用户定位"桥接起来了但没有 targets"：
+ *  1. abstract socket 探测结果（probeOk）—— Chrome 是否真的在监听这个 socket；
+ *  2. /json/version 的具体失败原因（discoveryError）—— 连接被拒/超时/reset/空响应；
+ *  3. 常见根因清单 + 对应操作（打开 Chrome 网页 / 启用 WebView 调试 / 换 socket）。
+ *
+ * 同时提供「重试探测」「重新枚举」「停止桥接」按钮。
+ */
+@Composable
+private fun DiagnosticsCard(state: UiState, viewModel: CdpViewModel) {
+    // 探测结论
+    val probeLine = when (state.probeOk) {
+        null -> "abstract socket 未探测"
+        true -> "abstract socket 可连 ✓（Chrome 在监听 @$${state.selectedAbstract ?: "?"}）"
+        false -> "abstract socket 连不上 ✗（@${state.selectedAbstract ?: "?"} 可能是残留死条目，或 Chrome 未运行）"
+    }
+    // 错误详情
+    val errLine = state.discoveryError ?: "等待 /json/version 响应…（已启动自动重试）"
+
+    // 根据探测+错误组合给最可能的建议
+    val suggestions = buildList {
+        if (state.probeOk == false) {
+            add("Chrome/WebView 进程未运行或已退出 —— 打开官方 Chrome 访问 https://example.com 后回此页")
+            add("选错了 socket —— 回到 Remote sockets 区换一个（如 webview_devtools_remote_*）")
+        } else {
+            add("在官方 Chrome 打开 https://example.com，再点下方「重试探测」")
+            add("若是 WebView：目标 App 必须调用 WebView.setWebContentsDebugging(true) 才能被 CDP 发现")
+            add("部分定制 ROM 的 Chrome 关闭了远程调试，换用 Chrome Beta / 系统 WebView 测试")
+        }
+        add("CDP 接口虽被桥接，但当前无调试目标 —— 这是 Chrome 侧决定，桥接本身正常")
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer
+        )
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Text(
+                "诊断：桥接已起但无 CDP 响应",
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                style = MaterialTheme.typography.labelMedium
+            )
+            Spacer(Modifier.height(6.dp))
+            // 探测行
+            Text(
+                probeLine,
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onErrorContainer
+            )
+            // 错误行
+            Text(
+                errLine,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.85f),
+                modifier = Modifier.padding(top = 2.dp)
+            )
+            // 建议
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "可能原因与建议：",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onErrorContainer
+            )
+            suggestions.forEachIndexed { i, s ->
+                Text(
+                    "${i + 1}. $s",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.9f),
+                    modifier = Modifier.padding(start = 4.dp, top = 2.dp)
+                )
+            }
+            // 操作按钮
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { viewModel.refreshVersion() }) { Text("重试探测") }
+                OutlinedButton(onClick = { viewModel.refreshAbstractTargets() }) { Text("重新枚举") }
+                OutlinedButton(onClick = { viewModel.stopBridge() }) { Text("停止桥接") }
+            }
+        }
     }
 }
 

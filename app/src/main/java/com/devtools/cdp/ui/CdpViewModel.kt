@@ -16,11 +16,13 @@ import com.devtools.cdi.TargetDiscovery
 import com.google.gson.JsonObject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -48,7 +50,11 @@ data class UiState(
     val exceptions: List<ExceptionEntry> = emptyList(),
     val domRoot: DomNode? = null,
     val network: List<NetworkRequest> = emptyList(),
-    val cdpConnected: Boolean = false
+    val cdpConnected: Boolean = false,
+    /** abstract socket 探测结果：null=未探测；true=可连；false=连不上。 */
+    val probeOk: Boolean? = null,
+    /** /json/version 失败时的具体原因（人类可读），用于诊断卡展示。null=未失败或未尝试。 */
+    val discoveryError: String? = null
 ) {
     companion object {
         const val MAX_CONSOLE = 500
@@ -75,6 +81,8 @@ class CdpViewModel : ViewModel() {
     private var discovery: TargetDiscovery? = null
     private var cdp: CdpClient? = null
     private var cdpJob: Job? = null
+    /** 桥接启动后的自动重试协程：定期拉 /json/version，成功或停止桥接时取消。 */
+    private var autoRetryJob: Job? = null
 
     // ---------- Shizuku 回调（由 MainActivity 调入） ----------
 
@@ -112,7 +120,9 @@ class CdpViewModel : ViewModel() {
 
     fun onBridgeDisconnected() {
         stopCdpInternal()
-        update { it.copy(bridgeState = BridgeState.IDLE, statusMessage = "UserService 已断开", cdpConnected = false) }
+        update { it.copy(bridgeState = BridgeState.IDLE, statusMessage = "UserService 已断开",
+            cdpConnected = false, probeOk = null, discoveryError = null,
+            version = null, httpTargets = emptyList(), selectedAbstract = null) }
     }
 
     // ---------- 桥接 / 枚举 ----------
@@ -134,32 +144,95 @@ class CdpViewModel : ViewModel() {
         }
         viewModelScope.launch(Dispatchers.IO) {
             // 先停旧的
+            cancelAutoRetry()
             runCatching { b.stopBridge() }
             val ok = runCatching { b.startBridge(bridgePort, abstractName) }.getOrDefault(false)
             if (ok) {
                 update {
                     it.copy(bridgeState = BridgeState.BRIDGE_RUNNING,
                         selectedAbstract = abstractName,
-                        statusMessage = "桥接已启动：127.0.0.1:$bridgePort <-> @$abstractName")
+                        statusMessage = "桥接已启动：127.0.0.1:$bridgePort <-> @$abstractName",
+                        version = null, probeOk = null, discoveryError = null)
                 }
-                // 立刻拉一次 version 验证桥接
+                // 关键：startBridge 只绑了 TCP 监听，立即探测 abstract socket 是否真的可连。
+                // 这样能区分"TCP 监听起来了但 Chrome 没在监听"vs"Chrome 在监听但 CDP 无响应"。
+                val probe = runCatching { b.probeAbstract(abstractName) }.getOrDefault(-2)
+                update { it.copy(probeOk = probe == 0) }
+                // 立刻拉一次 version；失败则启动自动重试（用户随后打开 Chrome 时能自动发现）
                 refreshVersion()
                 refreshHttpTargets()
+                scheduleAutoRetry()
             } else {
                 update { it.copy(statusMessage = "启动桥接失败，请确认 Chrome 已运行且可调试") }
             }
         }
     }
 
+    /**
+     * 桥接启动后自动重试：每 2s 拉一次 /json/version，最多 10 次（约 20s）。
+     * 成功拿到 version 即停；用户手动停止桥接或重连也会取消。
+     * 解决"用户先启动桥接、后打开 Chrome"的时序问题。
+     */
+    private fun scheduleAutoRetry() {
+        cancelAutoRetry()
+        autoRetryJob = viewModelScope.launch(Dispatchers.IO) {
+            repeat(10) { i ->
+                delay(2000)
+                if (!isActive) return@repeat
+                // 桥接已停或已拿到 version，停止重试
+                val st = _ui.value
+                if (st.bridgeState != BridgeState.BRIDGE_RUNNING) return@launch
+                if (st.version != null) return@launch
+                val d = discovery ?: return@launch
+                val res = d.fetchVersionResult()
+                if (res is TargetDiscovery.FetchResult.Ok) {
+                    update { it.copy(version = res.value,
+                        discoveryError = null,
+                        statusMessage = "桥接 OK：${res.value.browser}（第 ${i + 1} 次重试命中）") }
+                    // 顺带刷新 targets
+                    refreshHttpTargets()
+                    return@launch
+                } else {
+                    update { it.copy(discoveryError = describeFetchError(res)) }
+                }
+            }
+            // 10 次都未命中，保留最后一次错误供诊断卡展示
+            Log.w(TAG, "auto-retry exhausted, /json/version never responded")
+        }
+    }
+
+    private fun cancelAutoRetry() {
+        autoRetryJob?.cancel()
+        autoRetryJob = null
+    }
+
+    /** 把 [TargetDiscovery.FetchResult] 的失败分支转成人类可读诊断。 */
+    private fun describeFetchError(res: TargetDiscovery.FetchResult<*>): String = when (res) {
+        is TargetDiscovery.FetchResult.Ok -> ""
+        is TargetDiscovery.FetchResult.HttpError ->
+            "HTTP ${res.code}：桥接到的服务不是 CDP（或被 Chrome 拒绝）"
+        TargetDiscovery.FetchResult.Empty ->
+            "/json/version 返回空：对端立即关闭连接，Chrome 可能未真正在监听"
+        TargetDiscovery.FetchResult.Refused ->
+            "连接被拒：127.0.0.1:$bridgePort 未监听（桥接已停或未启动）"
+        TargetDiscovery.FetchResult.Timeout ->
+            "超时：abstract socket 连上但 Chrome 不回数据（socket 可能是残留死条目）"
+        TargetDiscovery.FetchResult.Reset ->
+            "连接被 reset：Chrome 检测到非 CDP 请求主动断开"
+        is TargetDiscovery.FetchResult.Other -> "网络异常：${res.message}"
+    }
+
     fun stopBridge() {
         val b = bridge ?: return
         viewModelScope.launch(Dispatchers.IO) {
+            cancelAutoRetry()
             stopCdpInternal()
             runCatching { b.stopBridge() }
             update {
                 it.copy(bridgeState = BridgeState.BOUND, cdpConnected = false,
                     version = null, httpTargets = emptyList(), domRoot = null,
                     console = emptyList(), exceptions = emptyList(), network = emptyList(),
+                    probeOk = null, discoveryError = null,
                     statusMessage = "桥接已停止")
             }
         }
@@ -169,9 +242,15 @@ class CdpViewModel : ViewModel() {
     fun refreshVersion() {
         val d = discovery ?: return
         viewModelScope.launch(Dispatchers.IO) {
-            val v = d.fetchVersion()
-            update { it.copy(version = v,
-                statusMessage = if (v != null) "桥接 OK：${v.browser}" else "/json/version 无响应") }
+            val res = d.fetchVersionResult()
+            if (res is TargetDiscovery.FetchResult.Ok) {
+                update { it.copy(version = res.value, discoveryError = null,
+                    statusMessage = "桥接 OK：${res.value.browser}") }
+            } else {
+                update { it.copy(version = null,
+                    discoveryError = describeFetchError(res),
+                    statusMessage = "/json/version 无响应") }
+            }
         }
     }
 
@@ -224,6 +303,7 @@ class CdpViewModel : ViewModel() {
         cdpJob = null
         cdp?.close()
         cdp = null
+        cancelAutoRetry()
     }
 
     /** Console：Runtime.evaluate 输入框提交。 */

@@ -6,6 +6,8 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.net.ConnectException
+import java.net.SocketTimeoutException
 import java.util.concurrent.TimeUnit
 
 /**
@@ -33,26 +35,97 @@ class TargetDiscovery(
     private val gson = Gson()
     private val base = "http://127.0.0.1:$port"
 
-    /** /json/version */
-    fun fetchVersion(): VersionInfo? = runCatching {
-        val req = Request.Builder().url("$base/json/version").get().build()
-        http.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) return null
-            val body = resp.body?.string() ?: return null
-            gson.fromJson(body, VersionInfo::class.java)
-        }
-    }.getOrNull()
+    /**
+     * 拉取结果：携带具体失败原因，便于 UI 给出可操作诊断。
+     *
+     * - [Ok]：成功，[value] 为解析后的对象；
+     * - [HttpError]：HTTP 通了但状态码非 2xx（说明桥接到的是 HTTP 服务但不是 CDP）；
+     * - [Empty]：HTTP 200 但 body 为空（对端立即关闭连接，常见于 Chrome 拒绝非 CDP 客户端）；
+     * - [Refused]：连接被拒（TCP 监听未起 / 桥接已停 / 端口错）；
+     * - [Timeout]：连接或读超时（abstract socket 连上但不回数据，常见于 socket 是死条目）；
+     * - [Reset]：连接被对端 reset（Chrome 检测到非法请求主动断开）；
+     * - [Other]：其他网络异常，[message] 为原始信息。
+     */
+    sealed class FetchResult<out T> {
+        data class Ok<T>(val value: T) : FetchResult<T>()
+        data class HttpError(val code: Int, val body: String?) : FetchResult<Nothing>()
+        data object Empty : FetchResult<Nothing>()
+        data object Refused : FetchResult<Nothing>()
+        data object Timeout : FetchResult<Nothing>()
+        data object Reset : FetchResult<Nothing>()
+        data class Other(val message: String) : FetchResult<Nothing>()
+    }
 
-    /** /json/list */
-    fun fetchTargets(): List<TargetInfo> = runCatching {
-        val req = Request.Builder().url("$base/json/list").get().build()
-        http.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) return emptyList()
-            val body = resp.body?.string() ?: return emptyList()
-            val type = object : TypeToken<List<TargetInfo>>() {}.type
-            gson.fromJson<List<TargetInfo>>(body, type) ?: emptyList()
+    /** /json/version（详细结果）。 */
+    fun fetchVersionResult(): FetchResult<VersionInfo> {
+        val req = Request.Builder().url("$base/json/version").get().build()
+        return try {
+            http.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    FetchResult.HttpError(resp.code, resp.body?.string())
+                } else {
+                    val body = resp.body?.string()
+                    if (body.isNullOrBlank()) FetchResult.Empty
+                    else {
+                        val v = runCatching { gson.fromJson(body, VersionInfo::class.java) }.getOrNull()
+                        if (v != null) FetchResult.Ok(v) else FetchResult.Other("parse failed: ${body.take(120)}")
+                    }
+                }
+            }
+        } catch (e: ConnectException) {
+            FetchResult.Refused
+        } catch (e: SocketTimeoutException) {
+            FetchResult.Timeout
+        } catch (e: java.net.SocketException) {
+            // Connection reset / broken pipe 等
+            if ((e.message ?: "").contains("reset", ignoreCase = true)) FetchResult.Reset
+            else FetchResult.Other(e.message ?: e.javaClass.simpleName)
+        } catch (e: javax.net.ssl.SSLException) {
+            if ((e.message ?: "").contains("reset", ignoreCase = true)) FetchResult.Reset
+            else FetchResult.Other(e.message ?: e.javaClass.simpleName)
+        } catch (e: Throwable) {
+            FetchResult.Other(e.message ?: e.javaClass.simpleName)
         }
-    }.getOrDefault(emptyList())
+    }
+
+    /** /json/version（兼容旧调用，失败返回 null）。 */
+    fun fetchVersion(): VersionInfo? = (fetchVersionResult() as? FetchResult.Ok)?.value
+
+    /** /json/list（详细结果）。 */
+    fun fetchTargetsResult(): FetchResult<List<TargetInfo>> {
+        val req = Request.Builder().url("$base/json/list").get().build()
+        return try {
+            http.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    FetchResult.HttpError(resp.code, resp.body?.string())
+                } else {
+                    val body = resp.body?.string()
+                    if (body.isNullOrBlank()) FetchResult.Empty
+                    else {
+                        val type = object : TypeToken<List<TargetInfo>>() {}.type
+                        val list = runCatching { gson.fromJson<List<TargetInfo>>(body, type) }.getOrNull()
+                        if (list != null) FetchResult.Ok(list) else FetchResult.Other("parse failed: ${body.take(120)}")
+                    }
+                }
+            }
+        } catch (e: ConnectException) {
+            FetchResult.Refused
+        } catch (e: SocketTimeoutException) {
+            FetchResult.Timeout
+        } catch (e: java.net.SocketException) {
+            if ((e.message ?: "").contains("reset", ignoreCase = true)) FetchResult.Reset
+            else FetchResult.Other(e.message ?: e.javaClass.simpleName)
+        } catch (e: javax.net.ssl.SSLException) {
+            if ((e.message ?: "").contains("reset", ignoreCase = true)) FetchResult.Reset
+            else FetchResult.Other(e.message ?: e.javaClass.simpleName)
+        } catch (e: Throwable) {
+            FetchResult.Other(e.message ?: e.javaClass.simpleName)
+        }
+    }
+
+    /** /json/list（兼容旧调用，失败返回空表）。 */
+    fun fetchTargets(): List<TargetInfo> =
+        (fetchTargetsResult() as? FetchResult.Ok)?.value ?: emptyList()
 
     /**
      * 把 webSocketDebuggerUrl 的 scheme://host:port 强制换成 ws://127.0.0.1:<port>。
