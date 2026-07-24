@@ -63,7 +63,21 @@ data class UiState(
     // —— Sources ——
     val sourcesEnabled: Boolean = false,
     val scripts: List<ScriptInfo> = emptyList(),
-    val scriptSources: Map<String, String> = emptyMap()
+    val scriptSources: Map<String, String> = emptyMap(),
+    // —— Application（Storage）——
+    val cookies: List<CookieInfo> = emptyList(),
+    val localStorage: List<StorageItem> = emptyList(),
+    val sessionStorage: List<StorageItem> = emptyList(),
+    // —— Performance ——
+    val perfRecording: Boolean = false,
+    val perfProfile: String? = null,
+    // —— Memory ——
+    val memoryMetrics: Map<String, Double> = emptyMap(),
+    val heapSnapshot: String? = null,
+    // —— Security ——
+    val securityInfo: String? = null,
+    // —— Elements 选中节点的计算样式 ——
+    val computedStyles: List<StyleEntry> = emptyList()
 ) {
     companion object {
         const val MAX_CONSOLE = 500
@@ -71,6 +85,36 @@ data class UiState(
         const val MAX_SCRIPTS = 500
     }
 }
+
+/** Cookie 信息（Network.getCookies 返回项）。 */
+data class CookieInfo(
+    val name: String,
+    val value: String,
+    val domain: String = "",
+    val path: String = "",
+    val expires: Double = 0.0,
+    val size: Int = 0,
+    val httpOnly: Boolean = false,
+    val secure: Boolean = false,
+    val sameSite: String = "",
+    val session: Boolean = false
+)
+
+/** Storage 键值对（localStorage / sessionStorage 项）。 */
+data class StorageItem(val key: String, val value: String)
+
+/** 计算样式条目（CSS.getComputedStyleForNode）。 */
+data class StyleEntry(val name: String, val value: String)
+
+/** CPU Profile 节点（Profiler.stop 返回 profile.nodes 简化）。 */
+data class ProfileNode(
+    val id: Int,
+    val function: String,
+    val url: String,
+    val line: Int,
+    val hitCount: Long,
+    val children: List<Int> = emptyList()
+)
 
 /** JS 脚本信息（来自 Debugger.scriptParsed 事件）。 */
 data class ScriptInfo(
@@ -933,6 +977,253 @@ class CdpViewModel : ViewModel() {
     /** 清空 Network 请求列表。 */
     fun clearNetwork() {
         update { it.copy(network = emptyList()) }
+    }
+
+    // ==================== Application（Storage）====================
+    // 对齐 Chrome DevTools Application 面板：Cookie / LocalStorage / SessionStorage。
+    // Cookie 走 Network 域；Web Storage 走 Runtime.evaluate（localStorage/sessionStorage）。
+
+    /** 拉取当前页面所有 Cookie（Network.getCookies）。 */
+    fun getCookies() {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val res = runCatching { c.send("Network.getCookies") }.getOrNull()
+            val arr = res?.getAsJsonArray("cookies") ?: return@launch
+            val list = arr.mapNotNull { it.asJsonObject?.let { parseCookie(it) } }
+            update { it.copy(cookies = list) }
+        }
+    }
+
+    private fun parseCookie(o: com.google.gson.JsonObject): CookieInfo? = try {
+        CookieInfo(
+            name = o.get("name")?.asString ?: "",
+            value = o.get("value")?.asString ?: "",
+            domain = o.get("domain")?.asString ?: "",
+            path = o.get("path")?.asString ?: "",
+            expires = o.get("expires")?.asDouble ?: 0.0,
+            size = o.get("size")?.asInt ?: 0,
+            httpOnly = o.get("httpOnly")?.asBoolean ?: false,
+            secure = o.get("secure")?.asBoolean ?: false,
+            sameSite = o.get("sameSite")?.asString ?: "",
+            session = o.get("session")?.asBoolean ?: false
+        )
+    } catch (_: Throwable) { null }
+
+    /** 设置/更新 Cookie（Network.setCookie）。 */
+    fun setCookie(name: String, value: String, domain: String, path: String) {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val params = JsonObject().apply {
+                addProperty("name", name)
+                addProperty("value", value)
+                if (domain.isNotBlank()) addProperty("domain", domain)
+                if (path.isNotBlank()) addProperty("path", path)
+            }
+            runCatching { c.send("Network.setCookie", params) }
+            getCookies()
+        }
+    }
+
+    /** 删除指定 Cookie（Network.deleteCookies）。 */
+    fun deleteCookie(name: String, domain: String, path: String) {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val params = JsonObject().apply {
+                addProperty("name", name)
+                if (domain.isNotBlank()) addProperty("domain", domain)
+                if (path.isNotBlank()) addProperty("path", path)
+            }
+            runCatching { c.send("Network.deleteCookies", params) }
+            getCookies()
+        }
+    }
+
+    /** 清空所有 Cookie（Network.clearBrowserCookies）。 */
+    fun clearCookies() {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { c.send("Network.clearBrowserCookies") }
+            getCookies()
+        }
+    }
+
+    /** 拉取 localStorage（Runtime.evaluate 序列化为 JSON）。 */
+    fun getLocalStorage() = evalStorage("localStorage")
+
+    /** 拉取 sessionStorage（Runtime.evaluate 序列化为 JSON）。 */
+    fun getSessionStorage() = evalStorage("sessionStorage")
+
+    private fun evalStorage(which: String) {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val expr = "JSON.stringify(Object.assign(...Object.keys($which).map(k=>({[k]:$which.getItem(k)}))))"
+            val params = JsonObject().apply {
+                addProperty("expression", expr)
+                addProperty("returnByValue", true)
+            }
+            val res = runCatching { c.send("Runtime.evaluate", params) }.getOrNull()
+            val json = res?.getAsJsonObject("result")?.get("value")?.asString ?: "{}"
+            val items = parseStorageJson(json)
+            update { st ->
+                if (which == "localStorage") st.copy(localStorage = items)
+                else st.copy(sessionStorage = items)
+            }
+        }
+    }
+
+    private fun parseStorageJson(json: String): List<StorageItem> = try {
+        val obj = com.google.gson.JsonParser.parseString(json).asJsonObject
+        obj.entrySet().map { StorageItem(it.key, it.value?.asString ?: "") }
+    } catch (_: Throwable) { emptyList() }
+
+    /** 设置 storage 项（localStorage.setItem / sessionStorage.setItem）。 */
+    fun setStorageItem(which: String, key: String, value: String) {
+        val c = cdp ?: return
+        if (key.isBlank()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val expr = "$which.setItem(${jsStr(key)},${jsStr(value)})"
+            val params = JsonObject().apply { addProperty("expression", expr) }
+            runCatching { c.send("Runtime.evaluate", params) }
+            if (which == "localStorage") getLocalStorage() else getSessionStorage()
+        }
+    }
+
+    /** 删除 storage 项（removeItem）。 */
+    fun removeStorageItem(which: String, key: String) {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val expr = "$which.removeItem(${jsStr(key)})"
+            val params = JsonObject().apply { addProperty("expression", expr) }
+            runCatching { c.send("Runtime.evaluate", params) }
+            if (which == "localStorage") getLocalStorage() else getSessionStorage()
+        }
+    }
+
+    /** 清空 storage（clear）。 */
+    fun clearStorage(which: String) {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val params = JsonObject().apply { addProperty("expression", "$which.clear()") }
+            runCatching { c.send("Runtime.evaluate", params) }
+            if (which == "localStorage") getLocalStorage() else getSessionStorage()
+        }
+    }
+
+    // ==================== Performance（CPU Profile）====================
+    // 对齐 Chrome DevTools Performance 录制：Profiler.start / Profiler.stop。
+    // stop 返回 profile.nodes / startTime / endTime，简化为热点函数排行展示。
+
+    /** 开始 CPU 性能录制（Profiler.start）。 */
+    fun startPerfRecording() {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { c.send("Profiler.enable") }
+            runCatching { c.send("Profiler.start") }
+            update { it.copy(perfRecording = true, perfProfile = null,
+                statusMessage = "性能录制中…") }
+        }
+    }
+
+    /** 停止录制并解析热点（Profiler.stop）。 */
+    fun stopPerfRecording() {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val res = runCatching { c.send("Profiler.stop") }.getOrNull()
+            val profile = res?.getAsJsonObject("profile")
+            val nodes = profile?.getAsJsonArray("nodes")
+            val sb = StringBuilder()
+            sb.append("=== CPU Profile 热点函数 ===\n")
+            // 按 hitCount 排序取 top 20
+            val hot = mutableListOf<ProfileNode>()
+            nodes?.forEach { n ->
+                val o = n.asJsonObject
+                val cf = o.getAsJsonObject("callFrame")
+                hot.add(ProfileNode(
+                    id = o.get("id")?.asInt ?: 0,
+                    function = cf?.get("functionName")?.asString?.ifEmpty { "(anonymous)" } ?: "(anonymous)",
+                    url = cf?.get("url")?.asString ?: "",
+                    line = cf?.get("lineNumber")?.asInt ?: 0,
+                    hitCount = o.get("hitCount")?.asLong ?: 0,
+                    children = o.getAsJsonArray("children")?.map { it.asInt } ?: emptyList()
+                ))
+            }
+            hot.sortedByDescending { it.hitCount }.take(20).forEach { node ->
+                val loc = if (node.url.isNotBlank()) "  ${node.url.substringAfterLast('/')}:${node.line}" else ""
+                sb.append("${node.hitCount.toString().padStart(8)}  ${node.function}$loc\n")
+            }
+            val startT = profile?.get("startTime")?.asLong ?: 0
+            val endT = profile?.get("endTime")?.asLong ?: 0
+            sb.append("\n总时长：${(endT - startT) / 1000.0} ms（采样 ${hot.size} 节点）")
+            update { it.copy(perfRecording = false, perfProfile = sb.toString(),
+                statusMessage = "性能录制完成") }
+        }
+    }
+
+    // ==================== Memory ====================
+    // 对齐 Chrome DevTools Memory：用 Performance.getMetrics 拿内存指标，
+    // HeapProfiler.takeHeapSnapshot 会回流大量数据，简化为指标视图。
+
+    /** 拉取内存指标（Performance.getMetrics）。 */
+    fun getMemoryMetrics() {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { c.send("Performance.enable") }
+            val res = runCatching { c.send("Performance.getMetrics") }.getOrNull()
+            val arr = res?.getAsJsonArray("metrics") ?: return@launch
+            val map = arr.mapNotNull { m ->
+                val o = m.asJsonObject
+                val name = o.get("name")?.asString ?: return@mapNotNull null
+                name to (o.get("value")?.asDouble ?: 0.0)
+            }.toMap()
+            update { it.copy(memoryMetrics = map) }
+        }
+    }
+
+    // ==================== Security ====================
+    // 对齐 Chrome DevTools Security 面板：显示页面安全状态。
+    // CDP 无独立 Security 域，用 Runtime.evaluate 取 location + document.securityPolicy。
+
+    /** 拉取页面安全信息。 */
+    fun getSecurityInfo() {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val expr = """JSON.stringify({
+                href: location.href,
+                protocol: location.protocol,
+                host: location.host,
+                origin: location.origin,
+                isSecure: location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1',
+                mixedContent: (function(){ try { return document.querySelector('[src^="http:"],[href^="http:"]') !== null } catch(e){ return false } })()
+            })""".trimIndent()
+            val params = JsonObject().apply {
+                addProperty("expression", expr)
+                addProperty("returnByValue", true)
+            }
+            val res = runCatching { c.send("Runtime.evaluate", params) }.getOrNull()
+            val json = res?.getAsJsonObject("result")?.get("value")?.asString
+            update { it.copy(securityInfo = json ?: "{}") }
+        }
+    }
+
+    // ==================== Elements：计算样式 ====================
+    // 对齐 Chrome DevTools Elements 的 Computed 面板：CSS.getComputedStyleForNode。
+
+    /** 拉取选中节点的计算样式（CSS.getComputedStyleForNode）。 */
+    fun getComputedStyles(nodeId: Int) {
+        val c = cdp ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { c.send("CSS.enable") }
+            val params = JsonObject().apply { addProperty("nodeId", nodeId) }
+            val res = runCatching { c.send("CSS.getComputedStyleForNode", params) }.getOrNull()
+            val arr = res?.getAsJsonObject("computedStyle")?.getAsJsonArray("cssProperties") ?: return@launch
+            val list = arr.mapNotNull { p ->
+                val o = p.asJsonObject
+                val name = o.get("name")?.asString ?: return@mapNotNull null
+                val value = o.get("value")?.asString ?: ""
+                if (value.isBlank()) null else StyleEntry(name, value)
+            }
+            update { it.copy(computedStyles = list) }
+        }
     }
 
     private fun update(block: (UiState) -> UiState) {

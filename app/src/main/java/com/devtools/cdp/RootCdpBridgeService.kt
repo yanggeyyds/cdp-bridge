@@ -21,7 +21,7 @@ import com.topjohnwu.superuser.ipc.RootService
  */
 class RootCdpBridgeService : RootService() {
 
-    override fun onBind(intent: Intent?): IBinder {
+    override fun onBind(intent: Intent): IBinder {
         // 复用 Shizuku 路径的同一个 Stub 实现
         return CdpBridgeService()
     }

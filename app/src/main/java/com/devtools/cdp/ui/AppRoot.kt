@@ -47,7 +47,8 @@ import com.devtools.cdp.BuildConfig
 
 private enum class CdpTab(val title: String) {
     TARGETS("Targets"), CONSOLE("Console"), ELEMENTS("Elements"),
-    NETWORK("Network"), SOURCES("Sources")
+    NETWORK("Network"), SOURCES("Sources"), APP("Application"),
+    PERFORMANCE("Performance"), MEMORY("Memory"), SECURITY("Security")
 }
 
 /**
@@ -142,6 +143,10 @@ fun AppRoot(viewModel: CdpViewModel, onModeChange: (BridgeMode) -> Unit) {
                 CdpTab.ELEMENTS -> ElementsScreen(viewModel, state)
                 CdpTab.NETWORK -> NetworkScreen(viewModel, state)
                 CdpTab.SOURCES -> SourcesScreen(viewModel, state)
+                CdpTab.APP -> ApplicationScreen(viewModel, state)
+                CdpTab.PERFORMANCE -> PerformanceScreen(viewModel, state)
+                CdpTab.MEMORY -> MemoryScreen(viewModel, state)
+                CdpTab.SECURITY -> SecurityScreen(viewModel, state)
             }
         }
     }

@@ -40,6 +40,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -199,6 +200,9 @@ fun ElementsScreen(viewModel: CdpViewModel, state: UiState) {
                         onAddAttr = { editAction = EditAction.AddAttr(sid) },
                         onRemoveAttr = { name -> viewModel.removeAttribute(sid, name) }
                     )
+                    // Computed Styles 面板：选中节点自动拉取计算样式
+                    LaunchedEffect(sid) { viewModel.getComputedStyles(sid) }
+                    StylesCard(state, viewModel, sid)
                 }
             }
         }
@@ -498,4 +502,60 @@ private fun renderNodePlain(node: DomNode): String = buildString {
 private fun copyToClipboard(context: Context, text: String) {
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     clipboard.setPrimaryClip(ClipData.newPlainText("elements", text))
+}
+
+/**
+ * Computed Styles 面板：对齐 Chrome DevTools Elements 的 Computed 标签。
+ * 展示选中节点的计算样式（CSS.getComputedStyleForNode），支持搜索过滤。
+ */
+@Composable
+private fun StylesCard(state: UiState, viewModel: CdpViewModel, nodeId: Int) {
+    var search by remember { mutableStateOf("") }
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        )
+    ) {
+        Column(modifier = Modifier.padding(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Computed Styles (${state.computedStyles.size})",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = { viewModel.getComputedStyles(nodeId) }) {
+                    Icon(Icons.Filled.Refresh, contentDescription = "刷新样式",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            OutlinedTextField(
+                value = search,
+                onValueChange = { search = it },
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                placeholder = { Text("过滤样式属性") },
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodySmall
+            )
+            val filtered = remember(state.computedStyles, search) {
+                if (search.isBlank()) state.computedStyles
+                else state.computedStyles.filter { it.name.contains(search, ignoreCase = true) }
+            }
+            filtered.take(80).forEach { s ->
+                Row(modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp)) {
+                    Text(s.name,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = Color(0xFFF9AB6B),
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1)
+                    Text(s.value,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = Color(0xFF81C995),
+                        maxLines = 1)
+                }
+            }
+        }
+    }
 }
