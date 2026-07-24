@@ -53,7 +53,31 @@ class TargetDiscovery(
         data object Refused : FetchResult<Nothing>()
         data object Timeout : FetchResult<Nothing>()
         data object Reset : FetchResult<Nothing>()
+        /** Android NetworkSecurityConfig 禁止明文 HTTP/WS 到 localhost。 */
+        data object CleartextBlocked : FetchResult<Nothing>()
         data class Other(val message: String) : FetchResult<Nothing>()
+    }
+
+    /**
+     * 判断异常是否由 Android cleartext 策略拦截。
+     *
+     * OkHttp 在 cleartext 被禁时会抛 IOException，消息特征：
+     *   "CLEARTEXT communication to 127.0.0.1 not permitted by network security policy"
+     * 异常类在不同 Android 版本可能是 CleartextConfigException 或被 wrap，
+     * 故用消息关键字匹配最稳妥。
+     * 来源: https://developer.android.com/training/articles/security-config#CleartextTraffic
+     */
+    private fun isCleartextBlocked(t: Throwable): Boolean {
+        var cur: Throwable? = t
+        repeat(5) {
+            if (cur == null) return false
+            val msg = cur!!.message ?: cur!!.javaClass.simpleName
+            if (msg.contains("CLEARTEXT", ignoreCase = true) ||
+                msg.contains("not permitted by network security policy", ignoreCase = true)
+            ) return true
+            cur = cur!!.cause
+        }
+        return false
     }
 
     /** /json/version（详细结果）。 */
@@ -77,14 +101,21 @@ class TargetDiscovery(
         } catch (e: SocketTimeoutException) {
             FetchResult.Timeout
         } catch (e: java.net.SocketException) {
-            // Connection reset / broken pipe 等
-            if ((e.message ?: "").contains("reset", ignoreCase = true)) FetchResult.Reset
+            if (isCleartextBlocked(e)) FetchResult.CleartextBlocked
+            else if ((e.message ?: "").contains("reset", ignoreCase = true)) FetchResult.Reset
             else FetchResult.Other(e.message ?: e.javaClass.simpleName)
         } catch (e: javax.net.ssl.SSLException) {
-            if ((e.message ?: "").contains("reset", ignoreCase = true)) FetchResult.Reset
+            if (isCleartextBlocked(e)) FetchResult.CleartextBlocked
+            else if ((e.message ?: "").contains("reset", ignoreCase = true)) FetchResult.Reset
+            else FetchResult.Other(e.message ?: e.javaClass.simpleName)
+        } catch (e: java.io.IOException) {
+            // Android NetworkSecurityConfig 拦 cleartext 时抛 IOException，
+            // 消息含 "CLEARTEXT communication ... not permitted by network security policy"
+            if (isCleartextBlocked(e)) FetchResult.CleartextBlocked
             else FetchResult.Other(e.message ?: e.javaClass.simpleName)
         } catch (e: Throwable) {
-            FetchResult.Other(e.message ?: e.javaClass.simpleName)
+            if (isCleartextBlocked(e)) FetchResult.CleartextBlocked
+            else FetchResult.Other(e.message ?: e.javaClass.simpleName)
         }
     }
 
@@ -113,13 +144,19 @@ class TargetDiscovery(
         } catch (e: SocketTimeoutException) {
             FetchResult.Timeout
         } catch (e: java.net.SocketException) {
-            if ((e.message ?: "").contains("reset", ignoreCase = true)) FetchResult.Reset
+            if (isCleartextBlocked(e)) FetchResult.CleartextBlocked
+            else if ((e.message ?: "").contains("reset", ignoreCase = true)) FetchResult.Reset
             else FetchResult.Other(e.message ?: e.javaClass.simpleName)
         } catch (e: javax.net.ssl.SSLException) {
-            if ((e.message ?: "").contains("reset", ignoreCase = true)) FetchResult.Reset
+            if (isCleartextBlocked(e)) FetchResult.CleartextBlocked
+            else if ((e.message ?: "").contains("reset", ignoreCase = true)) FetchResult.Reset
+            else FetchResult.Other(e.message ?: e.javaClass.simpleName)
+        } catch (e: java.io.IOException) {
+            if (isCleartextBlocked(e)) FetchResult.CleartextBlocked
             else FetchResult.Other(e.message ?: e.javaClass.simpleName)
         } catch (e: Throwable) {
-            FetchResult.Other(e.message ?: e.javaClass.simpleName)
+            if (isCleartextBlocked(e)) FetchResult.CleartextBlocked
+            else FetchResult.Other(e.message ?: e.javaClass.simpleName)
         }
     }
 

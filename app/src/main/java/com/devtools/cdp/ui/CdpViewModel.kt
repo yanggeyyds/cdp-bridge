@@ -219,6 +219,9 @@ class CdpViewModel : ViewModel() {
             "超时：abstract socket 连上但 Chrome 不回数据（socket 可能是残留死条目）"
         TargetDiscovery.FetchResult.Reset ->
             "连接被 reset：Chrome 检测到非 CDP 请求主动断开"
+        TargetDiscovery.FetchResult.CleartextBlocked ->
+            "明文 HTTP 被 Android 网络安全策略拦截：CLEARTEXT to 127.0.0.1 not permitted。" +
+            "这是 App 配置问题，需在 manifest 的 networkSecurityConfig 里允许 localhost cleartext（v1.4 已修复）"
         is TargetDiscovery.FetchResult.Other -> "网络异常：${res.message}"
     }
 

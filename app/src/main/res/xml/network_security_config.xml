@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  网络安全配置：仅允许对 127.0.0.1 / localhost 发起明文 HTTP / WS。
+
+  背景：
+    Android 9 (API 28) 起默认禁用 cleartext 流量。本项目通过 OkHttp 访问
+    http://127.0.0.1:9222/json/version、/json/list 与 ws://127.0.0.1:9222/...
+    走的是 Shizuku UserService 在本机起的 TCP 桥接，全部是回环明文，没有 TLS。
+    不放开 localhost cleartext 会报：
+      "CLEARTEXT communication to 127.0.0.1 not permitted by network security policy"
+
+  安全权衡：
+    用 <domain-config> 仅对 127.0.0.1 与 localhost 开 cleartext，
+    而不是 <base-config cleartextTrafficPermitted="true"> 全局放开，
+    避免对外网域名意外走明文。
+
+  来源: https://developer.android.com/privacy/security/security-config#CleartextTraffic
+  来源: https://developer.android.com/training/articles/security-config
+-->
+<network-security-config>
+    <!-- 127.0.0.1：OkHttp 访问桥接端点的主用地址 -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+    <!-- localhost：Chrome /json 返回的 webSocketDebuggerUrl 可能用 ws://localhost:9222 -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>
